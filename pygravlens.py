@@ -163,9 +163,11 @@ class lensplane:
     
     ##################################################################
     # initialization
+    # - ID = string identifying mass model
     # - parr = [[x0,y0,...], [x1,y1,...], ...]
     # - kappa,gamma_c,gamma_s = convergence and shear
-    # - Dl_Ds is the ratio (lens distance)/(source distance)
+    # - Dl_Ds is the ratio (lens distance)/(source distance);
+    #   used only in multiplane lensing
     ##################################################################
     
     def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl_Ds=0.5):
@@ -651,7 +653,7 @@ class lensmodel:
 
     ##################################################################
     # solve the lens equation and report the image(s) for a given
-    # source position
+    # source position or set of source positions
     ##################################################################f
 
     def findimg_func(self,x,u,plane):
