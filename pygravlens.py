@@ -872,4 +872,3 @@ class lensmodel:
         else:
             f.savefig(file,bbox_inches='tight')
 
-
