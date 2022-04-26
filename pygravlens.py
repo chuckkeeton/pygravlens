@@ -701,6 +701,20 @@ class lensmodel:
             return imgall,muall
 
     ##################################################################
+    # solve the lens equation and report the total magnification for
+    # a given source position or set of source positions; this is
+    # largely a wrapper for findimg()
+    ##################################################################f
+
+    def totmag(self,u,plane=-1):
+        imgarr,muarr = self.findimg(u,plane=plane)
+        srcarr = np.array(u)
+        if srcarr.ndim==1:
+            return np.sum(np.absolute(muarr))
+        else:
+            return [np.sum(np.absolute(mu)) for mu in muarr]
+
+    ##################################################################
     # given an image position, find the corresponding source and then
     # solve the lens equation to find all of the counter images
     ##################################################################
