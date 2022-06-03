@@ -165,7 +165,7 @@ class lensplane:
     # initialization
     # - ID = string identifying mass model
     # - parr = [[x0,y0,...], [x1,y1,...], ...]
-    # - kappa,gamma_c,gamma_s = convergence and shear
+    # - kappa,gammac,gammas = convergence and shear
     # - Dl_Ds is the ratio (lens distance)/(source distance);
     #   used only in multiplane lensing
     ##################################################################
