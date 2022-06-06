@@ -742,6 +742,58 @@ class lensmodel:
             return imgall,muall
 
     ##################################################################
+    # compute images of extended source(s)
+    # - srcmode = 'disk', 'gaus'
+    # - srcarr = list of [u0,v0,radius,intensity]
+    # - extent = [ [xlo,xhi,nx], [ylo,yhi,ny ]
+    # Returns:
+    # - srcmap,imgmap
+    ##################################################################
+
+    def extendedimg(self,srcmode='',srcarr=[],extent=[]):
+        if len(srcmode)==0:
+            print('Error in extendedimg(): srcmode is not specified')
+        if len(srcarr)==0:
+            print('Error in extendedimg(): srcarr is empty')
+        if len(extent)==0:
+            print('Error in extendedimg(): extent is empty')
+
+        # want srcarr to be 2d in general
+        srcarr = np.array(srcarr)
+        if srcarr.ndim==1:
+            srcarr = np.array([srcarr])
+
+        # construct the grid
+        xlo,xhi,nx = extent[0]
+        ylo,yhi,ny = extent[1]
+        xtmp = np.linspace(xlo,xhi,nx)
+        ytmp = np.linspace(ylo,yhi,ny)
+        xarr = mygrid(xtmp,ytmp)
+        # map to source plane
+        uarr,Aarr = self.lenseqn(xarr)
+        # initialize the maps
+        srcmap = 0.0*xarr[:,:,0]
+        imgmap = 0.0*xarr[:,:,0]
+
+        # loop over sources
+        for src in srcarr:
+            u0 = src[:2]
+            R0,I0 = src[2:4]
+            dsrc = np.linalg.norm(xarr-u0,axis=-1)
+            dimg = np.linalg.norm(uarr-u0,axis=-1)
+            if srcmode=='disk':
+                srcflag = np.where(dsrc<=R0)
+                imgflag = np.where(dimg<=R0)
+                srcmap[srcflag] += I0
+                imgmap[imgflag] += I0
+            elif srcmode=='gaus':
+                srcmap += np.exp(-0.5*dsrc**2/R0**2)
+                imgmap += np.exp(-0.5*dimg**2/R0**2)
+
+        # done
+        return srcmap,imgmap
+
+    ##################################################################
     # plot magnification map; the range is taken from maingrid,
     # while steps gives the number of pixels in each direction
     ##################################################################
