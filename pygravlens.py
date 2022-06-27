@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib import collections
 from matplotlib import cm
 from scipy.spatial import Delaunay
-from scipy.optimize import minimize
+from scipy.optimize import minimize,fsolve
 from shapely.geometry import Point, Polygon
 import copy
 
@@ -11,6 +11,9 @@ import copy
 ################################################################################
 # UTILITIES
 ################################################################################
+
+# softening length
+soften = 1.0e-6
 
 # some useful matrices
 I2 = np.eye(2)
@@ -78,7 +81,10 @@ def beta2d(beta,di):
 ################################################################################
 """
 point mass
-parameters = [x0,y0,thetaE]
+parameters = [x0,y0,thetaE,s]
+The softening length s is optional; if not specified, it is set using
+the 'soften' global variable.
+Softened potential = (1/2)*thetaE^2*ln(s^2+r^2)
 """
 def calc_ptmass(parr,x):
     # initialize
@@ -87,24 +93,28 @@ def calc_ptmass(parr,x):
 
     # loop through mass components
     for p in parr:
-        x0,y0,thetaE = p
+        # parameters
+        x0 = p[0]
+        y0 = p[1]
+        thetaE = p[2]
+        if len(p)>3:
+            s = p[3]
+        else:
+            s = soften
+
+        # positions relative to center
         dx = x - np.array([x0,y0])
 
-        r = np.linalg.norm(dx,axis=1)
-        cost = dx[:,0]/r
-        sint = dx[:,1]/r
-        # handle r=0
-        indx = np.where(r==0)
-        cost[indx] = 1.0
-        sint[indx] = 0.0
+        xx = dx[:,0]
+        yy = dx[:,1]
+        den = s*s+xx*xx+yy*yy
+        phix = thetaE**2*xx/den
+        phiy = thetaE**2*yy/den
+        phixx = thetaE**2*(s*s-xx*xx+yy*yy)/den**2
+        phiyy = thetaE**2*(s*s+xx*xx-yy*yy)/den**2
+        phixy = -2.0*thetaE**2*xx*yy/den**2
 
-        phir_r = thetaE**2/r**2
-        phirr  = -phir_r
-        phixx  = phir_r*sint*sint + phirr*cost*cost
-        phiyy  = phir_r*cost*cost + phirr*sint*sint
-        phixy  = (phirr-phir_r)*sint*cost
-
-        alpha += np.array([ phir_r[i]*dx[i] for i in range(len(x)) ])
+        alpha += np.moveaxis(np.array([phix,phiy]),-1,0)
         Gamma += np.moveaxis(np.array([[phixx,phixy],[phixy,phiyy]]),-1,0)
 
     return alpha,Gamma
@@ -165,7 +175,7 @@ class lensplane:
     # initialization
     # - ID = string identifying mass model
     # - parr = [[x0,y0,...], [x1,y1,...], ...]
-    # - kappa,gammac,gammas = convergence and shear
+    # - kappa,gammac,gammas = external convergence and shear
     # - Dl_Ds is the ratio (lens distance)/(source distance);
     #   used only in multiplane lensing
     ##################################################################
@@ -273,9 +283,14 @@ class lensmodel:
     #   + 'obs' indicates that the specified positions are observed,
     #     so the intrinsic positions must account for foreground bending
     #   + 'fix' indicates that the specified positions are fixed in space
+    # - multi_mode specifies how the multiplane lensing weight factors
+    #   beta and epsilon are handled:
+    #   + [] indicates to compute them based on planes' distances
+    #   + [beta,epsilon] indicates that the arrays are passed in
+    # - Ddecimals is the number of decimals to use when rounding distances
     ##################################################################
 
-    def __init__(self,plane_list,xtol=1.0e-5,position_mode='obs'):
+    def __init__(self,plane_list,xtol=1.0e-5,position_mode='obs',multi_mode=[],Ddecimals=3):
         self.xtol = xtol
         self.position_mode = position_mode
 
@@ -294,44 +309,67 @@ class lensmodel:
         self.griddone = False
         self.critdone = False
 
-        # process distances
-        self.nplane = len(plane_list)
-        dtmp = []
-        for plane in plane_list:
-            dtmp.append(plane.Dl_Ds)
-        dtmp.append(1.0)
-        dtmp = np.array(dtmp)
+        # group planes into slabs at the same distance;
+        # recall that we round distances using Ddecimals
+        dtmp = np.array([ plane.Dl_Ds for plane in plane_list ])
+        darr,iarr = np.unique(dtmp.round(Ddecimals),return_inverse=True)
+        self.slab_list = []
+        for i in range(len(darr)):
+            # this slab contains all planes at this distance
+            slab = [ plane_list[j] for j in np.where(iarr==i)[0] ]
+            self.slab_list.append(slab)
+        self.nslab = len(self.slab_list)
 
-        # make sure the planes are sorted in distance order
-        indx = np.argsort(dtmp)
-        darr = dtmp[indx]
-        self.plane_list = []
-        for i in indx[:-1]: self.plane_list.append(plane_list[i])
-
-        # compute beta factors
-        self.beta = np.zeros((self.nplane+1,self.nplane+1))
-        for j in range(self.nplane+1):
-            for i in range(j):
-                self.beta[i,j] = ((darr[j]-darr[i])*darr[-1])/((darr[-1]-darr[i])*darr[j])
+        # process multi_mode
+        if len(multi_mode)==0:
+            # compute beta factors; first append source distance to darr
+            darr = np.append(darr,1.0)
+            self.beta = np.zeros(self.nslab)
+            for j in range(self.nslab):
+                self.beta[j] = (darr[j+1]-darr[j])*darr[-1]/(darr[j+1]*(darr[-1]-darr[j]))
+            # compute epsilon factors; here it helps to prepend darr with 0,
+            # but then we have to take care with the indexing
+            self.epsilon = np.zeros(self.nslab)
+            darr = np.insert(darr,0,0.0)
+            for j in range(1,self.nslab+1):
+                self.epsilon[j-1] = (darr[j-1]*(darr[j+1]-darr[j]))/(darr[j+1]*(darr[j]-darr[j-1]))
+        elif len(multi_mode)==2:
+            beta,epsilon = multi_mode
+            if np.isscalar(beta):
+                self.beta = np.full(self.nslab,beta)
+            else:
+                self.beta = np.array(beta)
+            if np.isscalar(epsilon):
+                self.epsilon = np.full(self.nslab,epsilon)
+            else:
+                self.epsilon = np.array(epsilon)
+            if len(self.beta)!=self.nslab:
+                print('Error: incorrect length of beta specified in multi_mode')
+                return
+            if len(self.epsilon)!=self.nslab:
+                print('Error: incorrect length of epsilon specified in multi_mode')
+                return
+        else:
+            print('Error: cannot parse multi_mode argument')
+            return
 
         # see if model is 3d
-        self.flag3d = False
-        for i in range(1,self.nplane):
-            if abs(self.plane_list[i].Dl_Ds-self.plane_list[i-1].Dl_Ds)>1.0e-6: self.flag3d = True
+        self.flag3d = (self.nslab>=2)
 
         # process pobs and pfix
         if self.flag3d==False:
             # not 3d, so things are simple
-            for plane in self.plane_list:
-                plane.pobs = plane.parr[:,0:2]
-                plane.pfix = plane.parr[:,0:2]
+            for j in range(self.nslab):
+                for plane in self.slab_list[j]:
+                    plane.pobs = plane.parr[:,0:2] + 0.0
+                    plane.pfix = plane.parr[:,0:2] + 0.0
         elif self.position_mode=='obs':
-            # we need to map the observed positions back to find
-            # the intrinsic positions
-            for i,plane in enumerate(self.plane_list):
-                plane.pobs = plane.parr[:,0:2]
-                plane.pfix,A = self.lenseqn(plane.pobs,stopplane=i)
-                plane.parr[:,0:2] = plane.pfix
+            # map observed positions back to find intrinsic positions
+            for j in range(self.nslab):
+                for plane in self.slab_list[j]:
+                    plane.pobs = plane.parr[:,0:2] + 0.0
+                    plane.pfix,A = self.lenseqn(plane.pobs,stopslab=j)
+                    plane.parr[:,0:2] = plane.pfix + 0.0
         # note: 3d with position_mode=='fix' is handled in find_centers()
 
     ##################################################################
@@ -339,23 +377,24 @@ class lensmodel:
     ##################################################################
 
     def info(self):
-        print('number of planes:',self.nplane)
+        print('number of planes:',self.nslab)
         print('maingrid:',self.maingrid_info)
         print('galgrid:',self.galgrid_info)
         if self.flag3d:
             print('model is 3d')
-            print('beta:',self.beta)
             print('position mode:',self.position_mode)
+            print('beta:',self.beta)
+            print('epsilon:',self.epsilon)
 
     ##################################################################
     # lens equation; take an arbitrary set of image positions and return
     # the corresponding set of source positions; can handle multiplane
-    # lensing; stopplane can be used to stop at some specified plane,
-    # and stopplane<0 means go all the way to the source
+    # lensing; stopslab can be used to stop at some specified plane,
+    # and stopslab<0 means go all the way to the source
     ##################################################################
 
-    def lenseqn(self,xarr,stopplane=-1):
-        if stopplane<0: stopplane = len(self.plane_list)
+    def lenseqn(self,xarr,stopslab=-1):
+        if stopslab<0: stopslab = len(self.slab_list)
         xarr = np.array(xarr)
         # need special treatment if xarr is a single point
         if xarr.ndim==1:
@@ -364,43 +403,48 @@ class lensmodel:
         else:
             oneflag = False
 
-        # structures to store everything - all positions, all planes
+        # structures to store everything (all slabs)
         xshape = list(xarr.shape[:-1])
-        xall = np.zeros([self.nplane+1]+xshape+[2])
-        Aall = np.zeros([self.nplane+1]+xshape+[2,2])
-        alphaall = np.zeros([self.nplane+1]+xshape+[2])
-        GammAall = np.zeros([self.nplane+1]+xshape+[2,2])
+        xall = np.zeros([self.nslab+1]+xshape+[2])
+        Aall = np.zeros([self.nslab+1]+xshape+[2,2])
+        alphaall = np.zeros([self.nslab+1]+xshape+[2])
+        GammAall = np.zeros([self.nslab+1]+xshape+[2,2])
 
         # set of identity matrices for all positions
         tmp0 = np.zeros(xshape)
         tmp1 = tmp0 + 1.0
         bigI = np.moveaxis(np.array([[tmp1,tmp0],[tmp0,tmp1]]),[0,1],[-2,-1])
 
-        # initialize first plane
+        # initialize first slab
         xall[0] = xarr
         Aall[0] = bigI
 
         # construct the z and A lists by iterating
-        for j in range(stopplane):
-            # compute this plane
-            alpha_now,Gamma_now = self.plane_list[j].defmag(xall[j])
+        for j in range(stopslab):
+            # compute this slab
+            alpha_now = np.zeros(xshape+[2])
+            Gamma_now = np.zeros(xshape+[2,2])
+            for plane in self.slab_list[j]:
+                alpha_tmp,Gamma_tmp = plane.defmag(xall[j])
+                alpha_now += alpha_tmp
+                Gamma_now += Gamma_tmp
             # we need Gamma@A, not Gamma by itself
             Gamma_A_now = Gamma_now@Aall[j]
-            # store this plane
+            # store this slab
             alphaall[j] = alpha_now
             GammAall[j] = Gamma_A_now
             # compute the lens equation
-            xall[j+1] = xall[0]
-            Aall[j+1] = Aall[0]
-            for i in range(j+1):
-                xall[j+1] = xall[j+1] - self.beta[i,j+1]*alphaall[i]
-                Aall[j+1] = Aall[j+1] - self.beta[i,j+1]*GammAall[i]
+            xall[j+1] = xall[j] - self.beta[j]*alphaall[j]
+            Aall[j+1] = Aall[j] - self.beta[j]*GammAall[j]
+            if j>=1:
+                xall[j+1] += self.epsilon[j]*(xall[j]-xall[j-1])
+                Aall[j+1] += self.epsilon[j]*(Aall[j]-Aall[j-1])
 
         # return the desired plane
         if oneflag:
-            return xall[stopplane][0],Aall[stopplane][0]
+            return xall[stopslab][0],Aall[stopslab][0]
         else:
-            return xall[stopplane],Aall[stopplane]
+            return xall[stopslab],Aall[stopslab]
 
     ##################################################################
     # compute numerical derivatives d(src)/d(img) and compare them
@@ -452,11 +496,11 @@ class lensmodel:
     # compute the tiling; this is a wrapper meant to be called by user
     ##################################################################
 
-    def tile(self,addlevels=2,addpoints=5):
+    def tile(self,addlevels=2,addpoints=5,holes=0):
         # find the centers
         self.find_centers()
         # do the (final) tiling
-        self.do_tile(addlevels=addlevels,addpoints=addpoints)
+        self.do_tile(addlevels=addlevels,addpoints=addpoints,holes=holes)
         # for plotting the grid
         self.plotimg = collections.LineCollection(self.imgpts[self.edges],color='lightgray')
         self.plotsrc = collections.LineCollection(self.srcpts[self.edges],color='lightgray')
@@ -471,10 +515,9 @@ class lensmodel:
         if self.flag3d==False:
 
             # model is not 3d, so we can just collect all of the centers
-            for plane in self.plane_list:
-                plane.pobs = plane.parr[:,0:2]
-                plane.pfix = plane.parr[:,0:2]
-                for p in plane.pobs: centers.append(p)
+            for j in range(self.nslab):
+                for plane in self.slab_list[j]:
+                    for p in plane.pobs: centers.append(p)
             self.centers = np.array(centers)
 
         else:
@@ -482,28 +525,30 @@ class lensmodel:
             # model is 3d, so we need to take care with the centers
             if self.position_mode=='obs':
                 # we already processed pobs and pfix in __init__()
-                for plane in self.plane_list:
-                    for p in plane.pobs: centers.append(p)
+                for j in range(self.nslab):
+                    for plane in self.slab_list[j]:
+                        for p in plane.pobs: centers.append(p)
                 self.centers = np.array(centers)
             elif self.position_mode=='fix':
                 # the specified positions are fixed, so we need
                 # to solve the lens equation (for the appropriate
                 # source plane) to find the corresponding observed
                 # positions
-                for i,plane in enumerate(self.plane_list):
-                    plane.pfix = plane.parr[:,0:2]
-                    if i==0:
-                        # for first plane, just use pfix
-                        for p in plane.pfix: centers.append(p)
-                    else:
-                        # we need to tile with what we have so far
-                        self.do_tile(stopplane=i)
-                        # solve the (intermediate) lens equation to find
-                        # the observed position(s) of the center(s)
-                        for pfix in plane.pfix:
-                            pobs,mu = self.findimg(pfix,plane=i)
-                            for p in pobs: centers.append(p)
-                    self.centers = np.array(centers)
+                for j in range(self.nslab):
+                    for plane in self.slab_list[j]:
+                        plane.pfix = plane.parr[:,0:2] + 0.0
+                        if j==0:
+                            # for first slab, just use pfix
+                            for p in plane.pfix: centers.append(p)
+                        else:
+                            # we need to tile with what we have so far
+                            self.do_tile(stopslab=j)
+                            # solve (intermediate) lens equation to find
+                            # observed position(s) of center(s)
+                            for pfix in plane.pfix:
+                                pobs,mu = self.findimg(pfix,plane=j)
+                                for p in pobs: centers.append(p)
+                        self.centers = np.array(centers)
             else:
                 print('Error: unknown position_mode')
                 return
@@ -512,7 +557,7 @@ class lensmodel:
     # internal: this is the workhorse that does the tiling
     ##################################################################
 
-    def do_tile(self,stopplane=-1,addlevels=2,addpoints=5):
+    def do_tile(self,stopslab=-1,addlevels=2,addpoints=5,holes=0):
 
         # construct maingrid
         if len(self.maingrid_info)>0:
@@ -542,15 +587,24 @@ class lensmodel:
             # reshape so it's just a list of points
             self.galgrid_pts = np.reshape(np.array(self.galgrid_pts),(-1,2))
 
-        # positions in image plane, from maingrid and galgrid depending on what is available
+        # positions in image plane, from maingrid and galgrid
+        # depending on what is available
         if len(self.maingrid_pts)>0 and len(self.galgrid_pts)>0:
             self.imgpts = np.concatenate((self.maingrid_pts,self.galgrid_pts),axis=0)
         elif len(self.maingrid_pts)>0:
             self.imgpts = self.maingrid_pts
         else:
             self.imgpts = self.galgrid_pts
+
+        # if desired, cut holes in grid around centers
+        if holes>0:
+            for x0 in self.centers:
+                r = np.linalg.norm(self.imgpts-x0,axis=1)
+                indx = np.where(r<holes)[0]
+                self.imgpts = np.delete(self.imgpts,indx,axis=0)
+
         # positions in source plane, and inverse magnifications
-        u,A = self.lenseqn(self.imgpts,stopplane=stopplane)
+        u,A = self.lenseqn(self.imgpts,stopslab=stopslab)
         self.srcpts = u
         self.minv = np.linalg.det(A)
 
@@ -682,8 +736,9 @@ class lensmodel:
             imgraw = []
             for itri in trilist:
                 # run scipy.optimize.minimize starting from the triangle mean
-                xtry = np.mean(self.imgpoly[itri,:3],axis=0)
-                ans = minimize(self.findimg_func,xtry,args=(u,plane),tol=0.1*self.xtol)
+                tri = self.imgpoly[itri,:3]
+                xtri = np.mean(tri,axis=0)
+                ans = minimize(self.findimg_func,xtri,args=(u,plane),method='Nelder-Mead',options={'initial_simplex':tri,'xatol':0.01*self.xtol,'fatol':1.e-6*self.xtol**2})
                 if ans.success: imgraw.append(ans.x)
             imgraw = np.array(imgraw)
             # there may be duplicate solutions, so extract the unique ones
@@ -826,47 +881,116 @@ class lensmodel:
             plt.savefig(file,bbox_inches='tight')
 
     ##################################################################
-    # plot critical curve(s) and caustic(s); the search range is taken
-    # from maingrid, with the specified number of steps in each direction
+    # plot critical curve(s) and caustic(s); different modes:
+    #
+    # mode=='grid' : the search range is taken from maingrid, with
+    # the specified number of steps in each direction
+    #
+    # mode=='tile1' : points are interpolated from the tiling
+    #
+    # mode=='tile2' : initial guesses from the tiling are refined
+    # using root finding
     ##################################################################
 
-    def plotcrit(self,steps=500,show=True,title='',file=''):
-        # set up the grid
-        xlo,xhi,nx = self.maingrid_info[0]
-        ylo,yhi,ny = self.maingrid_info[1]
-        xtmp = np.linspace(xlo,xhi,steps)
-        ytmp = np.linspace(ylo,yhi,steps)
-        xarr = mygrid(xtmp,ytmp)
-        # we need the pixel scale(s)
-        xpix = xtmp[1]-xtmp[0]
-        ypix = ytmp[1]-ytmp[0]
-        pixscale = np.array([xpix,ypix])
-        # compute magnifications
-        u,A = self.lenseqn(xarr)
-        muinv = np.linalg.det(A)
+    def plotcrit(self,mode='grid',steps=500,pointtype='line',show=True,title='',file=''):
+        self.critdone = False
 
-        # get the contours where muinv=0 (python magic!)
-        plt.figure()
-        cnt = plt.contour(muinv,[0])
-        plt.title('dummy plot')
-        plt.close()
+        if mode=='grid':
 
-        # initialize lists
-        self.crit = []
-        self.caus = []
+            # set up the grid
+            xlo,xhi,nx = self.maingrid_info[0]
+            ylo,yhi,ny = self.maingrid_info[1]
+            xtmp = np.linspace(xlo,xhi,steps)
+            ytmp = np.linspace(ylo,yhi,steps)
+            xarr = mygrid(xtmp,ytmp)
+            # we need the pixel scale(s)
+            xpix = xtmp[1]-xtmp[0]
+            ypix = ytmp[1]-ytmp[0]
+            pixscale = np.array([xpix,ypix])
+            # compute magnifications
+            u,A = self.lenseqn(xarr)
+            muinv = np.linalg.det(A)
+
+            # get the contours where muinv=0 (python magic!)
+            plt.figure()
+            cnt = plt.contour(muinv,[0])
+            plt.title('dummy plot')
+            plt.close()
+
+            # initialize lists
+            self.crit = []
+            self.caus = []
+
+            # loop over all "segments" in the contour plot
+            x0 = np.array([xlo,ylo])
+            for v in cnt.allsegs[0]:
+                # convert from pixel units to arcsec in image plane
+                xcrit = x0 + pixscale*v
+                ucaus,A = self.lenseqn(xcrit)
+                self.crit.append(xcrit)
+                self.caus.append(ucaus)
+
+        elif mode=='tile1':
+
+            if self.griddone==False:
+                print("Error: plotcrit with mode=='tile1' requires tiling to be complete")
+                return
+            # get endpoints of all segments
+            tmp = self.imgpts[self.edges]
+            xA = tmp[:,0]
+            xB = tmp[:,1]
+            tmp = self.minv[self.edges]
+            mA = tmp[:,0]
+            mB = tmp[:,1]
+            # find segments where magnification changes sign
+            indx = np.where(mA*mB<0)[0]
+            xA = xA[indx]
+            xB = xB[indx]
+            mA = mA[indx]
+            mB = mB[indx]
+            # interpolate
+            wcrit = (0.0-mA)/(mB-mA)
+            xcrit = (1.0-wcrit[:,None])*xA + wcrit[:,None]*xB
+            ucaus,A = self.lenseqn(xcrit)
+            # what we save needs to be list of lists
+            self.crit = [xcrit]
+            self.caus = [ucaus]
+
+        elif mode=='tile2':
+
+            if self.griddone==False:
+                print("Error: plotcrit with mode=='tile2' requires tiling to be complete")
+                return
+            # get endpoints of all segments
+            tmp = self.imgpts[self.edges]
+            xA = tmp[:,0]
+            xB = tmp[:,1]
+            tmp = self.minv[self.edges]
+            mA = tmp[:,0]
+            mB = tmp[:,1]
+            # find segments where magnification changes sign
+            indx = np.where(mA*mB<0)[0]
+            # use root finding on each relevant segment
+            xcrit = []
+            for i in indx:
+                wtmp = fsolve(self.tile2_func,0.5,args=(xA[i],xB[i]))[0]
+                xtmp = (1.0-wtmp)*xA[i] + wtmp*xB[i]
+                xcrit.append(xtmp)
+            xcrit = np.array(xcrit)
+            # find corresponding caustic points
+            ucaus,A = self.lenseqn(xcrit)
+            # what we save needs to be list of lists
+            self.crit = [xcrit]
+            self.caus = [ucaus]
+
+        # now make the figure
         f,ax = plt.subplots(1,2,figsize=(10,5))
-
-        # loop over all "segments" in the contour plot
-        x0 = np.array([xlo,ylo])
-        for v in cnt.allsegs[0]:
-            # convert from pixel units to arcsec in image plane
-            x = x0 + pixscale*v
-            u,A = self.lenseqn(x)
-            self.crit.append(x)
-            self.caus.append(u)
-            ax[0].plot(x[:,0],x[:,1])
-            ax[1].plot(u[:,0],u[:,1])
-
+        if pointtype=='line':
+            for x in self.crit: ax[0].plot(x[:,0],x[:,1])
+            for u in self.caus: ax[1].plot(u[:,0],u[:,1])
+        else:
+            for x in self.crit: ax[0].plot(x[:,0],x[:,1],pointtype)
+            for u in self.caus: ax[1].plot(u[:,0],u[:,1],pointtype)
         ax[0].set_aspect('equal')
         ax[1].set_aspect('equal')
         if len(title)>0:
@@ -885,13 +1009,18 @@ class lensmodel:
         # update flag indicating that crit/caus have been computed
         self.critdone = True
 
+    def tile2_func(self,w,xA,xB):
+        x = (1.0-w)*xA + w*xB
+        u,A = self.lenseqn(x)
+        return np.linalg.det(A)
+
     ##################################################################
     # general purpose plotter, with options to plot the grid,
     # critical curve(s) and caustic(s), and source/image combinations
     ##################################################################
 
     def plot(self,imgrange=[],srcrange=[],plotgrid=False,plotcrit='black',
-             src=[],file=''):
+             src=[],title='',file=''):
 
         f,ax = plt.subplots(1,2,figsize=(12,6))
 
@@ -931,7 +1060,10 @@ class lensmodel:
             ax[1].set_ylim([srcrange[2],srcrange[3]])
         ax[0].set_aspect('equal')
         ax[1].set_aspect('equal')
-        ax[0].set_title('image plane')
+        if len(title)==0:
+            ax[0].set_title('image plane')
+        else:
+            ax[0].set_title(r'image plane - '+title)
         ax[1].set_title('source plane')
         if len(file)==0:
             f.show()
