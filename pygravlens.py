@@ -4,6 +4,7 @@ from matplotlib import collections
 from matplotlib import cm
 from scipy.spatial import Delaunay
 from scipy.optimize import minimize,fsolve
+from scipy.special import hyp2f1
 from shapely.geometry import Point, Polygon
 import copy
 
@@ -155,11 +156,78 @@ def calc_SIS(parr,x):
 
 ################################################################################
 """
+Elliptical power law
+parameters = [x0,y0,t,bt,ec,es]
+kappa = (2-t)/2 * bt/R^t
+where R = sqrt(q^2*x^2+y^2) is elliptical radius
+Analysis by Tessore & Metcalf:
+https://ui.adsabs.harvard.edu/abs/2015A%26A...580A..79T/abstract
+https://ui.adsabs.harvard.edu/abs/2016A%26A...593C...2T/abstract (erratum)
+"""
+def calc_ellpow(parr,x):
+    # initialize
+    alpha = np.zeros((len(x),2))
+    Gamma = np.zeros((len(x),2,2))
+
+    # loop through mass components
+    for p in parr:
+        x0,y0,t,bt,ec,es = p
+
+        # process ellipticity and orientation
+        e = np.sqrt(ec**2+es**2)
+        q = 1.0-e
+        te = 0.5*np.arctan2(es,ec)
+        rot = np.array([[np.cos(te),-np.sin(te)],[np.sin(te),np.cos(te)]])
+
+        # coordinates centered on and aligned with ellipse
+        dx = (x-np.array([x0,y0]))@rot
+
+        # complex coordinate
+        z = dx[:,0] + 1j*dx[:,1]
+        z_conj = np.conj(z)
+
+        # elliptical radius and angle defined by Tessore & Metcalf
+        R = np.sqrt((q*dx[:,0])**2+dx[:,1]**2)
+        phi = np.arctan2(dx[:,1],q*dx[:,0])
+
+        e_iphi = np.cos(phi) + 1j*np.sin(phi)
+        e_iphi_conj = np.conj(e_iphi)
+        e_i2phi = np.cos(2*phi) + 1j*np.sin(2*phi)
+        e_i2phi_conj = np.conj(e_i2phi)
+
+        # deflection (complex)
+        alpha_R = 2*bt/((1+q)*R**(t-1))
+        alpha_ang = e_iphi*hyp2f1(1,0.5*t,2-0.5*t,-(1-q)/(1+q)*e_i2phi)
+        alpha_comp = alpha_R*alpha_ang
+        alpha_conj = np.conj(alpha_comp)
+
+        # potential
+        psi = (z*alpha_conj+z_conj*alpha_comp)/(2*(2-t))
+
+        # convergence and shear (complex)
+        kappa = (2-t)*bt/(2*R**t)
+        gamma_comp = -kappa*z/z_conj + (1-t)*alpha_comp/z_conj
+
+        # revert to vector/matrix notation; here the last index is position
+        atmp = np.array([alpha_comp.real,alpha_comp.imag])
+        Gtmp = np.array([[kappa+gamma_comp.real,gamma_comp.imag],[gamma_comp.imag,kappa-gamma_comp.real]])
+
+        # handle rotation and reorder the to get list of vectors/matrices
+        alpha += np.einsum('ij,ja',rot,atmp)
+        Gamma += np.einsum('ij,jka,lk',rot,Gtmp,rot)
+
+        # CRK HERE STILL NEED TO HANDLE ROTATION
+
+    return alpha,Gamma
+
+################################################################################
+"""
 dictionary with known models
 """
 massmodel = {
     'ptmass' : calc_ptmass,
-    'SIS'    : calc_SIS
+    'SIS'    : calc_SIS,
+    'ellpow' : calc_ellpow
 }
 
 
