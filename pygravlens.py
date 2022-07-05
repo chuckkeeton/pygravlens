@@ -89,6 +89,7 @@ Softened potential = (1/2)*thetaE^2*ln(s^2+r^2)
 """
 def calc_ptmass(parr,x):
     # initialize
+    pot = np.zeros(len(x))
     alpha = np.zeros((len(x),2))
     Gamma = np.zeros((len(x),2,2))
 
@@ -109,56 +110,72 @@ def calc_ptmass(parr,x):
         xx = dx[:,0]
         yy = dx[:,1]
         den = s*s+xx*xx+yy*yy
+        phi = 0.5*thetaE**2*np.log(den)
         phix = thetaE**2*xx/den
         phiy = thetaE**2*yy/den
         phixx = thetaE**2*(s*s-xx*xx+yy*yy)/den**2
         phiyy = thetaE**2*(s*s+xx*xx-yy*yy)/den**2
         phixy = -2.0*thetaE**2*xx*yy/den**2
 
+        pot += phi
         alpha += np.moveaxis(np.array([phix,phiy]),-1,0)
         Gamma += np.moveaxis(np.array([[phixx,phixy],[phixy,phiyy]]),-1,0)
 
-    return alpha,Gamma
+    return pot,alpha,Gamma
 
 ################################################################################
 """
 Singular Isothermal Sphere (SIS)
-parameters = [x0,y0,thetaE]
+parameters = [x0,y0,thetaE,s]
+The softening length s is optional; if not specified, it is set using
+the 'soften' global variable.
 """
 def calc_SIS(parr,x):
     # initialize
+    pot = np.zeros(len(x))
     alpha = np.zeros((len(x),2))
     Gamma = np.zeros((len(x),2,2))
 
     # loop through mass components
     for p in parr:
-        x0,y0,thetaE = p
+        # parameters
+        x0 = p[0]
+        y0 = p[1]
+        thetaE = p[2]
+        if len(p)>3:
+            s = p[3]
+        else:
+            s = soften
+
+        # positions relative to center
         dx = x - np.array([x0,y0])
 
-        r = np.linalg.norm(dx,axis=1)
-        cost = dx[:,0]/r
-        sint = dx[:,1]/r
-        # handle r=0
-        indx = np.where(r==0)
-        cost[indx] = 1.0
-        sint[indx] = 0.0
+        xx = dx[:,0]
+        yy = dx[:,1]
+        sr = np.sqrt(xx*xx+yy*yy+s*s)
+        r  = np.sqrt(xx*xx+yy*yy)
+        t  = np.arctan2(yy,xx)
+        ct = np.cos(t)
+        st = np.sin(t)
 
-        phir_r = thetaE/r
-        phirr  = 0.0
-        phixx  = phir_r*sint*sint + phirr*cost*cost
-        phiyy  = phir_r*cost*cost + phirr*sint*sint
-        phixy  = (phirr-phir_r)*sint*cost
+        phi = thetaE*(sr-s) - thetaE*s*np.log((s+sr)/(2.0*s))
+        phir_r = thetaE/(sr+s)
+        phirr  = thetaE*s/(sr*(sr+s))
+        phixx  = phir_r*st*st + phirr*ct*ct
+        phiyy  = phir_r*ct*ct + phirr*st*st
+        phixy  = (phirr-phir_r)*st*ct
 
+        pot += phi
         alpha += np.array([ phir_r[i]*dx[i] for i in range(len(x)) ])
         Gamma += np.moveaxis(np.array([[phixx,phixy],[phixy,phiyy]]),-1,0)
 
-    return alpha,Gamma
+    return pot,alpha,Gamma
 
 ################################################################################
 """
 Elliptical power law
-parameters = [x0,y0,t,bt,ec,es]
-kappa = (2-t)/2 * bt/R^t
+parameters = [x0,y0,eta,b,ec,es]
+kappa = (1/2) * eta * b/R^(2-eta)
 where R = sqrt(q^2*x^2+y^2) is elliptical radius
 Analysis by Tessore & Metcalf:
 https://ui.adsabs.harvard.edu/abs/2015A%26A...580A..79T/abstract
@@ -166,12 +183,16 @@ https://ui.adsabs.harvard.edu/abs/2016A%26A...593C...2T/abstract (erratum)
 """
 def calc_ellpow(parr,x):
     # initialize
+    pot = np.zeros(len(x))
     alpha = np.zeros((len(x),2))
     Gamma = np.zeros((len(x),2,2))
 
     # loop through mass components
     for p in parr:
-        x0,y0,t,bt,ec,es = p
+        x0,y0,eta,bt,ec,es = p
+        # index used by Tessore & Metcalf
+        t = 2.0-eta
+        # note that here bt = b^t
 
         # process ellipticity and orientation
         e = np.sqrt(ec**2+es**2)
@@ -202,7 +223,7 @@ def calc_ellpow(parr,x):
         alpha_conj = np.conj(alpha_comp)
 
         # potential
-        psi = (z*alpha_conj+z_conj*alpha_comp)/(2*(2-t))
+        phi = (z*alpha_conj+z_conj*alpha_comp)/(2*(2-t))
 
         # convergence and shear (complex)
         kappa = (2-t)*bt/(2*R**t)
@@ -213,12 +234,11 @@ def calc_ellpow(parr,x):
         Gtmp = np.array([[kappa+gamma_comp.real,gamma_comp.imag],[gamma_comp.imag,kappa-gamma_comp.real]])
 
         # handle rotation and reorder the to get list of vectors/matrices
+        pot += phi.real
         alpha += np.einsum('ij,ja',rot,atmp)
         Gamma += np.einsum('ij,jka,lk',rot,Gtmp,rot)
 
-        # CRK HERE STILL NEED TO HANDLE ROTATION
-
-    return alpha,Gamma
+    return pot,alpha,Gamma
 
 ################################################################################
 """
@@ -284,27 +304,29 @@ class lensplane:
         xtmp = xarr.reshape((-1,2))
 
         # call the appropriate lensing function
-        atmp,Gtmp = massmodel[self.ID](self.parr,xtmp)
+        ptmp,atmp,Gtmp = massmodel[self.ID](self.parr,xtmp)
 
         # factor in convergence and shear
         Mtmp = self.kappa*I2 + self.gammac*Pauli_s3   + self.gammas*Pauli_s1
-        atmp += np.array([ Mtmp@x for x in xtmp ])
-        Gtmp += np.array([ Mtmp   for x in xtmp ])
+        ptmp += np.array([ x@Mtmp@x for x in xtmp ])
+        atmp += np.array([   Mtmp@x for x in xtmp ])
+        Gtmp += np.array([   Mtmp   for x in xtmp ])
 
         # reshape so the spatial parts match xshape
         alpha_shape = np.concatenate((xshape,[2]))
         Gamma_shape = np.concatenate((xshape,[2,2]))
+        pot   = np.reshape(ptmp,xshape)
         alpha = np.reshape(atmp,alpha_shape)
         Gamma = np.reshape(Gtmp,Gamma_shape)
 
         if oneflag:
-            return alpha[0],Gamma[0]
+            return pot[0],alpha[0],Gamma[0]
         else:
-            return alpha,Gamma
+            return pot,alpha,Gamma
 
     ##################################################################
-    # compute numerical derivatives of alpha and compare them with
-    # calculated values of Gamma
+    # compute numerical derivatives of phi and alpha to compare with
+    # calculated values of alpha and Gamma
     ##################################################################
 
     def check(self,xarr,h=1.0e-4,floor=1.0e-10):
@@ -314,26 +336,35 @@ class lensplane:
         hx = np.array([h,0.0])
         hy = np.array([0.0,h])
         # compute
-        a0,G0 = self.defmag(xarr)
-        ax,Gx = self.defmag(xarr+hx)
-        ay,Gy = self.defmag(xarr+hy)
-        # compute numerical 2nd derivatives
-        axx = (ax[:,0]-a0[:,0])/h
-        axy = (ay[:,0]-a0[:,0])/h
-        ayx = (ax[:,1]-a0[:,1])/h
-        ayy = (ay[:,1]-a0[:,1])/h
+        p0,a0,G0 = self.defmag(xarr)
+        px,ax,Gx = self.defmag(xarr+hx)
+        py,ay,Gy = self.defmag(xarr+hy)
+        # compute numerical derivatives
+        ax_num = (px-p0)/h
+        ay_num = (py-p0)/h
+        axx_num = (ax[:,0]-a0[:,0])/h
+        axy_num = (ay[:,0]-a0[:,0])/h
+        ayx_num = (ax[:,1]-a0[:,1])/h
+        ayy_num = (ay[:,1]-a0[:,1])/h
+        # construct numerical 1st deriv matrix
+        atmp = np.array([ax_num,ay_num])
+        atry = np.moveaxis(atmp,0,-1)
         # construct numerical 2nd deriv matrix
-        Gtmp = np.array([[axx,axy],[ayx,ayy]])
+        Gtmp = np.array([[axx_num,axy_num],[ayx_num,ayy_num]])
         Gtry = np.moveaxis(Gtmp,[0,1],[-2,-1])
-        # compare to computed Gamma matrix
+        # compare to computed arrays
+        da = atry-a0
         dG = Gtry-G0
         # plot histogram
-        tmp1 = np.absolute(dG).flatten()
-        tmp2 = np.log10(tmp1[tmp1>floor])
+        tmpa1 = np.absolute(da).flatten()
+        tmpa2 = np.log10(tmpa1[tmpa1>floor])
+        tmpG1 = np.absolute(dG).flatten()
+        tmpG2 = np.log10(tmpG1[tmpG1>floor])
         plt.figure()
-        plt.hist(tmp2)
-        plt.xlabel('log10(difference in bending angle)')
-        plt.ylabel('number')
+        plt.hist(tmpa2,density=True,alpha=0.5,label='phi/alpha')
+        plt.hist(tmpG2,density=True,alpha=0.5,label='alpha/Gamma')
+        plt.legend()
+        plt.xlabel('log10(difference)')
         plt.show()
 
 
@@ -493,7 +524,7 @@ class lensmodel:
             alpha_now = np.zeros(xshape+[2])
             Gamma_now = np.zeros(xshape+[2,2])
             for plane in self.slab_list[j]:
-                alpha_tmp,Gamma_tmp = plane.defmag(xall[j])
+                pot_tmp,alpha_tmp,Gamma_tmp = plane.defmag(xall[j])
                 alpha_now += alpha_tmp
                 Gamma_now += Gamma_tmp
             # we need Gamma@A, not Gamma by itself
