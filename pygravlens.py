@@ -9,6 +9,7 @@ from scipy.special import hyp2f1
 from scipy.interpolate import RectBivariateSpline
 from numpy.fft import fftfreq,fftn,ifftn
 import copy
+import pickle
 
 
 ################################################################################
@@ -320,15 +321,15 @@ class lensplane:
     ##################################################################
 
     def init_kapmap(self,basename):
-        tmp = np.load(basename+'-grid.npy')
-        x_arr = tmp[0]
-        y_arr = tmp[1]
-        all_maps = np.load(basename+'-maps.npy')
+        with open(basename+'.pkl','rb') as f:
+            all_arr = pickle.load(f)
+        x_arr = all_arr[0]
+        y_arr = all_arr[1]
         ptmp = [0,0]  # code expects first two parameters to be position
-        for i in range(6):
+        for i in range(2,8):
             # the maps from kappa2lens have the image [y,x] index convention,
             # so we need to take transpose to get what spline expects
-            tmpfunc = RectBivariateSpline(x_arr,y_arr,all_maps[i].T,kx=3,ky=3)
+            tmpfunc = RectBivariateSpline(x_arr,y_arr,all_arr[i].T,kx=3,ky=3)
             ptmp.append(tmpfunc)
         self.parr = [ptmp]
 
@@ -510,16 +511,25 @@ class lensmodel:
             # not 3d, so things are simple
             for j in range(self.nslab):
                 for plane in self.slab_list[j]:
-                    plane.pobs = np.array([p[0:2] for p in plane.parr])
-                    plane.pfix = plane.pobs + 0.0
+                    if plane.ID=='kapmap':
+                        # kapmap gets special treatment
+                        plane.pobs = np.array([[0,0]])
+                        plane.pfix = np.array([[0,0]])
+                    else:
+                        plane.pobs = plane.parr[:,0:2] + 0.0
+                        plane.pfix = plane.pobs + 0.0
         elif self.position_mode=='obs':
             # map observed positions back to find intrinsic positions
-            # CRK HERE - needs to be updated for kapmap
             for j in range(self.nslab):
                 for plane in self.slab_list[j]:
-                    plane.pobs = plane.parr[:,0:2] + 0.0
-                    plane.pfix,A = self.lenseqn(plane.pobs,stopslab=j)
-                    plane.parr[:,0:2] = plane.pfix + 0.0
+                    if plane.ID=='kapmap':
+                        # kapmap gets special treatment
+                        plane.pobs = np.array([[0,0]])
+                        plane.pfix = np.array([[0,0]])
+                    else:
+                        plane.pobs = plane.parr[:,0:2] + 0.0
+                        plane.pfix,A = self.lenseqn(plane.pobs,stopslab=j)
+                        plane.parr[:,0:2] = plane.pfix + 0.0
         # note: 3d with position_mode=='fix' is handled in find_centers()
 
     ##################################################################
@@ -557,6 +567,7 @@ class lensmodel:
         xshape = list(xarr.shape[:-1])
         xall = np.zeros([self.nslab+1]+xshape+[2])
         Aall = np.zeros([self.nslab+1]+xshape+[2,2])
+        tall = np.zeros([self.nslab+1]+xshape)
         alphaall = np.zeros([self.nslab+1]+xshape+[2])
         GammAall = np.zeros([self.nslab+1]+xshape+[2,2])
 
@@ -684,22 +695,27 @@ class lensmodel:
                 # to solve the lens equation (for the appropriate
                 # source plane) to find the corresponding observed
                 # positions
-                # CRK HERE - needs to be updated for kapmap
                 for j in range(self.nslab):
                     for plane in self.slab_list[j]:
-                        plane.pfix = plane.parr[:,0:2] + 0.0
-                        if j==0:
-                            # for first slab, just use pfix
-                            for p in plane.pfix: centers.append(p)
+                        if plane.ID=='kapmap':
+                            # kapmap gets special treatment
+                            plane.pobs = np.array([[0,0]])
+                            plane.pfix = np.array([[0,0]])
+                            centers.append([0,0])
                         else:
-                            # we need to tile with what we have so far
-                            self.do_tile(stopslab=j)
-                            # solve (intermediate) lens equation to find
-                            # observed position(s) of center(s)
-                            for pfix in plane.pfix:
-                                pobs,mu = self.findimg(pfix,plane=j)
-                                for p in pobs: centers.append(p)
-                        self.centers = np.array(centers)
+                            plane.pfix = plane.parr[:,0:2] + 0.0
+                            if j==0:
+                                # for first slab, just use pfix
+                                for p in plane.pfix: centers.append(p)
+                            else:
+                                # we need to tile with what we have so far
+                                self.do_tile(stopslab=j)
+                                # solve (intermediate) lens equation to find
+                                # observed position(s) of center(s)
+                                for pfix in plane.pfix:
+                                    pobs,mu = self.findimg(pfix,plane=j)
+                                    for p in pobs: centers.append(p)
+                self.centers = np.array(centers)
             else:
                 print('Error: unknown position_mode')
                 return
@@ -881,6 +897,7 @@ class lensmodel:
         # loop over sources
         imgall = []
         muall = []
+        tdall = []
         for u in srcarr:
             # find triangles that contain u, and check each of them
             trilist = self.findtri(u)
@@ -1290,7 +1307,7 @@ def kappa2lens(x_arr, y_arr, kappa_arr, outbase=''):
         # return the maps
         return phi, phix, phiy, phixx, phiyy, phixy
     else:
-        # save the maps to files
-        np.save(outbase+'-grid.npy',np.array([x_arr,y_arr]))
-        np.save(outbase+'-maps.npy',np.array([phi,phix,phiy,phixx,phiyy,phixy]))
-        print(f'Saved kappa2lens results to: {outbase}-grid.npy and {outbase}-maps.npy')
+        # save arrays to file
+        with open(outbase+'.pkl','wb') as f:
+            pickle.dump([x_arr,y_arr,phi,phix,phiy,phixx,phiyy,phixy],f)
+        print(f'Saved kappa2lens results to {outbase}.pkl')
