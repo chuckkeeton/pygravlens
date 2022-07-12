@@ -2,10 +2,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import collections
 from matplotlib import cm
+from shapely.geometry import Point, Polygon
 from scipy.spatial import Delaunay
 from scipy.optimize import minimize,fsolve
 from scipy.special import hyp2f1
-from shapely.geometry import Point, Polygon
+from scipy.interpolate import RectBivariateSpline
+from numpy.fft import fftfreq,fftn,ifftn
 import copy
 
 
@@ -76,7 +78,6 @@ def beta2d(beta,di):
 
 ################################################################################
 # MASS MODELS
-# TO DO: need to handle divide by zero at centers
 ################################################################################
 
 ################################################################################
@@ -242,12 +243,37 @@ def calc_ellpow(parr,x):
 
 ################################################################################
 """
+Lens model computed from a kappa map, using the FFT analysis. Here parr
+is the list of interpolation functions for the different lensing quantities.
+"""
+def calc_kapmap(parr,x):
+    # initialize
+    pot = np.zeros(len(x))
+    alpha = np.zeros((len(x),2))
+    Gamma = np.zeros((len(x),2,2))
+
+    xx = x[:,0]
+    yy = x[:,1]
+
+    pot          = parr[0][2].ev(xx,yy)
+    alpha[:,0]   = parr[0][3].ev(xx,yy)
+    alpha[:,1]   = parr[0][4].ev(xx,yy)
+    Gamma[:,0,0] = parr[0][5].ev(xx,yy)
+    Gamma[:,1,1] = parr[0][6].ev(xx,yy)
+    Gamma[:,0,1] = parr[0][7].ev(xx,yy)
+    Gamma[:,1,0] = parr[0][7].ev(xx,yy)
+
+    return pot,alpha,Gamma
+
+################################################################################
+"""
 dictionary with known models
 """
 massmodel = {
     'ptmass' : calc_ptmass,
     'SIS'    : calc_SIS,
-    'ellpow' : calc_ellpow
+    'ellpow' : calc_ellpow,
+    'kapmap' : calc_kapmap
 }
 
 
@@ -258,7 +284,7 @@ massmodel = {
 ################################################################################
 
 class lensplane:
-    
+
     ##################################################################
     # initialization
     # - ID = string identifying mass model
@@ -266,12 +292,14 @@ class lensplane:
     # - kappa,gammac,gammas = external convergence and shear
     # - Dl_Ds is the ratio (lens distance)/(source distance);
     #   used only in multiplane lensing
+    # NOTE: to work with a kappa map, use:
+    # - ID = 'kapmap'
+    # - parr = basename as used in kappa2lens
     ##################################################################
-    
+
     def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl_Ds=0.5):
         # store the parameters
         self.ID = ID
-        self.parr = np.array(parr)
         self.kappa = kappa
         self.gammac = gammac
         self.gammas = gammas
@@ -279,8 +307,30 @@ class lensplane:
         if Dl_Ds>=1.0:
             print('Error: lens plane cannot be at or behind source plane')
             return
-        # parr should be list of lists; this handles single-component case
-        if self.parr.ndim==1: self.parr = np.array([parr])
+        # handle special case of kapmap
+        if ID=='kapmap':
+            self.init_kapmap(parr)
+        else:
+            self.parr = np.array(parr)
+            # parr should be list of lists; this handles single-component case
+            if self.parr.ndim==1: self.parr = np.array([parr])
+
+    ##################################################################
+    # stuff to process a kapmap model
+    ##################################################################
+
+    def init_kapmap(self,basename):
+        tmp = np.load(basename+'-grid.npy')
+        x_arr = tmp[0]
+        y_arr = tmp[1]
+        all_maps = np.load(basename+'-maps.npy')
+        ptmp = [0,0]  # code expects first two parameters to be position
+        for i in range(6):
+            # the maps from kappa2lens have the image [y,x] index convention,
+            # so we need to take transpose to get what spline expects
+            tmpfunc = RectBivariateSpline(x_arr,y_arr,all_maps[i].T,kx=3,ky=3)
+            ptmp.append(tmpfunc)
+        self.parr = [ptmp]
 
     ##################################################################
     # compute deflection vector and Gamma tensor at a set of
@@ -460,10 +510,11 @@ class lensmodel:
             # not 3d, so things are simple
             for j in range(self.nslab):
                 for plane in self.slab_list[j]:
-                    plane.pobs = plane.parr[:,0:2] + 0.0
-                    plane.pfix = plane.parr[:,0:2] + 0.0
+                    plane.pobs = np.array([p[0:2] for p in plane.parr])
+                    plane.pfix = plane.pobs + 0.0
         elif self.position_mode=='obs':
             # map observed positions back to find intrinsic positions
+            # CRK HERE - needs to be updated for kapmap
             for j in range(self.nslab):
                 for plane in self.slab_list[j]:
                     plane.pobs = plane.parr[:,0:2] + 0.0
@@ -610,7 +661,7 @@ class lensmodel:
 
     def find_centers(self):
         centers = []
-        
+
         if self.flag3d==False:
 
             # model is not 3d, so we can just collect all of the centers
@@ -633,6 +684,7 @@ class lensmodel:
                 # to solve the lens equation (for the appropriate
                 # source plane) to find the corresponding observed
                 # positions
+                # CRK HERE - needs to be updated for kapmap
                 for j in range(self.nslab):
                     for plane in self.slab_list[j]:
                         plane.pfix = plane.parr[:,0:2] + 0.0
@@ -1169,3 +1221,76 @@ class lensmodel:
         else:
             f.savefig(file,bbox_inches='tight')
 
+
+################################################################################
+# FFT ANALYSIS
+################################################################################
+
+"""
+This code is adapted from Meneghetti, "Introduction to Gravitational Lensing:
+With Python Examples" (Lecture Notes in Physics, 2021).
+
+x_arr,y_arr represent the arrays used to construct the grid - must be 1d
+kappa_arr has the convergence on the grid
+"""
+
+def kappa2lens(x_arr, y_arr, kappa_arr, outbase=''):
+
+    # grid spacings
+    dx = x_arr[1] - x_arr[0]
+    dy = y_arr[1] - y_arr[0]
+    # full x,y grid
+    xgrid,ygrid = np.meshgrid(x_arr,y_arr)
+    # grid dimensions
+    ny,nx = kappa_arr.shape
+    # we need mean kappa
+    kappa_avg = np.mean(kappa_arr)
+
+    # k vector, computed using grid info; include factor of 2*pi to make wavevector (not wavenumber)
+    kx,ky = 2.0*np.pi*np.array(np.meshgrid(fftfreq(nx,dx),fftfreq(ny,dy)))
+    # square amplitude
+    k2 = kx**2 + ky**2
+    # regularize to avoid divide by 0
+    k2[0,0] = 1.0
+
+    # Fourier transform of kappa
+    kappa_ft = fftn(kappa_arr)
+    # solve for FT of potential; again regularize at origin
+    phi_ft = -2.0/k2*kappa_ft
+    phi_ft[0, 0] = 0.0
+    # now FT of deflection
+    phix_ft = 1j*kx*phi_ft
+    phiy_ft = 1j*ky*phi_ft
+    # now FT of second derivatives
+    phixx_ft = -kx*kx*phi_ft
+    phiyy_ft = -ky*ky*phi_ft
+    phixy_ft = -kx*ky*phi_ft
+
+    # transform back to real space
+    phi = np.real(ifftn(phi_ft))
+    phix = np.real(ifftn(phix_ft))
+    phiy = np.real(ifftn(phiy_ft))
+    phixx = np.real(ifftn(phixx_ft))
+    phiyy = np.real(ifftn(phiyy_ft))
+    phixy = np.real(ifftn(phixy_ft))
+
+    # this analysis produces a solution that has <kappa> = 0;
+    # to recover the original, we need to add a mass sheet
+    phi += 0.5*kappa_avg*(xgrid**2+ygrid**2)
+    phix += kappa_avg*xgrid
+    phiy += kappa_avg*ygrid
+    phixx += kappa_avg
+    phiyy += kappa_avg
+
+    # we only care about potential differences
+    phi -= np.amin(phi)
+
+    # done
+    if len(outbase)==0:
+        # return the maps
+        return phi, phix, phiy, phixx, phiyy, phixy
+    else:
+        # save the maps to files
+        np.save(outbase+'-grid.npy',np.array([x_arr,y_arr]))
+        np.save(outbase+'-maps.npy',np.array([phi,phix,phiy,phixx,phiyy,phixy]))
+        print(f'Saved kappa2lens results to: {outbase}-grid.npy and {outbase}-maps.npy')
