@@ -291,7 +291,7 @@ class lensplane:
     # - ID = string identifying mass model
     # - parr = [[x0,y0,...], [x1,y1,...], ...]
     # - kappa,gammac,gammas = external convergence and shear
-    # - Dl_Ds is the ratio (lens distance)/(source distance);
+    # - Dl_Ds is the ratio (lens distance)/(source distance) - comoving;
     #   used only in multiplane lensing
     # NOTE: to work with a kappa map, use:
     # - ID = 'kapmap'
@@ -472,11 +472,15 @@ class lensmodel:
 
         # process multi_mode
         if len(multi_mode)==0:
-            # compute beta factors; first append source distance to darr
+            # compute beta and tauhat factors;
+            # recall tauhat = tau*c/Ds where this Ds is comoving
+            # first append source distance to darr
             darr = np.append(darr,1.0)
             self.beta = np.zeros(self.nslab)
+            self.tauhat = np.zeros(self.nslab)
             for j in range(self.nslab):
                 self.beta[j] = (darr[j+1]-darr[j])*darr[-1]/(darr[j+1]*(darr[-1]-darr[j]))
+                self.tauhat[j] = darr[j]*darr[j+1]/((darr[j+1]-darr[j])*darr[-1])
             # compute epsilon factors; here it helps to prepend darr with 0,
             # but then we have to take care with the indexing
             self.epsilon = np.zeros(self.nslab)
