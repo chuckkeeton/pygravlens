@@ -8,6 +8,8 @@ from scipy.optimize import minimize,fsolve
 from scipy.special import hyp2f1
 from scipy.interpolate import RectBivariateSpline
 from numpy.fft import fftfreq,fftn,ifftn
+from astropy import constants as const
+from astropy import units as u
 import copy
 import pickle
 
@@ -291,23 +293,20 @@ class lensplane:
     # - ID = string identifying mass model
     # - parr = [[x0,y0,...], [x1,y1,...], ...]
     # - kappa,gammac,gammas = external convergence and shear
-    # - Dl_Ds is the ratio (lens distance)/(source distance) - comoving;
-    #   used only in multiplane lensing
+    # - Dl is the comoving distance to the lens; can be in units of the
+    #   distance to the source; used for time delays and multiplane lensing
     # NOTE: to work with a kappa map, use:
     # - ID = 'kapmap'
     # - parr = basename as used in kappa2lens
     ##################################################################
 
-    def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl_Ds=0.5):
+    def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl=0.5):
         # store the parameters
         self.ID = ID
         self.kappa = kappa
         self.gammac = gammac
         self.gammas = gammas
-        self.Dl_Ds = Dl_Ds
-        if Dl_Ds>=1.0:
-            print('Error: lens plane cannot be at or behind source plane')
-            return
+        self.Dl = Dl
         # handle special case of kapmap
         if ID=='kapmap':
             self.init_kapmap(parr)
@@ -429,6 +428,7 @@ class lensmodel:
     ##################################################################
     # initialize with a list of lensplane structures
     # - xtol is the tolerance used for finding images
+    # - Ds is the comoving distance to the source (can be 1)
     # - position_mode is important for multiplane lensing;
     #   + 'obs' indicates that the specified positions are observed,
     #     so the intrinsic positions must account for foreground bending
@@ -440,9 +440,22 @@ class lensmodel:
     # - Ddecimals is the number of decimals to use when rounding distances
     ##################################################################
 
-    def __init__(self,plane_list,xtol=1.0e-5,position_mode='obs',multi_mode=[],Ddecimals=3):
+    def __init__(self,plane_list,xtol=1.0e-5,Ds=1,length_unit=u.arcsec,position_mode='obs',multi_mode=[],Ddecimals=3):
         self.xtol = xtol
+        self.Ds = Ds
+        self.length_unit = length_unit
         self.position_mode = position_mode
+
+        # factor for time delays
+        if np.isscalar(Ds):
+            self.tfac = 1
+        else:
+            if self.Ds.unit.is_equivalent(u.m):
+                self.tfac = self.Ds/const.c*(self.length_unit/u.rad)**2
+                self.tfac = self.tfac.to(u.d)
+            else:
+                print('Error: Ds units not recognized')
+                return
 
         # structures for critical curves and caustics
         self.crit = []
@@ -460,8 +473,9 @@ class lensmodel:
         self.critdone = False
 
         # group planes into slabs at the same distance;
+        # note that we work with distances scaled by Ds;
         # recall that we round distances using Ddecimals
-        dtmp = np.array([ plane.Dl_Ds for plane in plane_list ])
+        dtmp = np.array([ plane.Dl/self.Ds for plane in plane_list ])
         darr,iarr = np.unique(dtmp.round(Ddecimals),return_inverse=True)
         self.slab_list = []
         for i in range(len(darr)):
@@ -938,7 +952,7 @@ class lensmodel:
             # add  to lists
             imgall.append(imgarr[indx])
             muall.append(muarr[indx])
-            dtall.append(dt[indx])
+            dtall.append(self.tfac*dt[indx])
 
         if oneflag:
             return imgall[0],muall[0],dtall[0]
