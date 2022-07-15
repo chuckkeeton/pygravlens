@@ -359,9 +359,9 @@ class lensplane:
 
         # factor in convergence and shear
         Mtmp = self.kappa*I2 + self.gammac*Pauli_s3   + self.gammas*Pauli_s1
-        ptmp += np.array([ x@Mtmp@x for x in xtmp ])
-        atmp += np.array([   Mtmp@x for x in xtmp ])
-        Gtmp += np.array([   Mtmp   for x in xtmp ])
+        ptmp += np.array([ 0.5*x@Mtmp@x for x in xtmp ])
+        atmp += np.array([       Mtmp@x for x in xtmp ])
+        Gtmp += np.array([       Mtmp   for x in xtmp ])
 
         # reshape so the spatial parts match xshape
         alpha_shape = np.concatenate((xshape,[2]))
@@ -930,10 +930,15 @@ class lensmodel:
             # we only care about differential time delays
             dt0 = np.amin(dt)
             dt = dt - dt0
+            # if we have time delays, report images in tdel order
+            if np.amax(dt)>0.0:
+                indx = np.argsort(dt)
+            else:
+                indx = np.arange(len(imgarr))
             # add  to lists
-            imgall.append(imgarr)
-            muall.append(muarr)
-            dtall.append(dt)
+            imgall.append(imgarr[indx])
+            muall.append(muarr[indx])
+            dtall.append(dt[indx])
 
         if oneflag:
             return imgall[0],muall[0],dtall[0]
