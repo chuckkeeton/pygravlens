@@ -503,6 +503,8 @@ class lensmodel:
             if len(self.epsilon)!=self.nslab:
                 print('Error: incorrect length of epsilon specified in multi_mode')
                 return
+            self.tauhat = np.zeros(self.nslab)
+            print('NOTE: time delays are not computed when beta and epsilon are given explicitly')
         else:
             print('Error: cannot parse multi_mode argument')
             return
@@ -532,7 +534,7 @@ class lensmodel:
                         plane.pfix = np.array([[0,0]])
                     else:
                         plane.pobs = plane.parr[:,0:2] + 0.0
-                        plane.pfix,A = self.lenseqn(plane.pobs,stopslab=j)
+                        plane.pfix,A,dt = self.lenseqn(plane.pobs,stopslab=j)
                         plane.parr[:,0:2] = plane.pfix + 0.0
         # note: 3d with position_mode=='fix' is handled in find_centers()
 
@@ -569,9 +571,10 @@ class lensmodel:
 
         # structures to store everything (all slabs)
         xshape = list(xarr.shape[:-1])
+        tall = np.zeros([self.nslab+1]+xshape)
         xall = np.zeros([self.nslab+1]+xshape+[2])
         Aall = np.zeros([self.nslab+1]+xshape+[2,2])
-        tall = np.zeros([self.nslab+1]+xshape)
+        potall   = np.zeros([self.nslab+1]+xshape)
         alphaall = np.zeros([self.nslab+1]+xshape+[2])
         GammAall = np.zeros([self.nslab+1]+xshape+[2,2])
 
@@ -587,15 +590,18 @@ class lensmodel:
         # construct the z and A lists by iterating
         for j in range(stopslab):
             # compute this slab
+            pot_now   = np.zeros(xshape)
             alpha_now = np.zeros(xshape+[2])
             Gamma_now = np.zeros(xshape+[2,2])
             for plane in self.slab_list[j]:
                 pot_tmp,alpha_tmp,Gamma_tmp = plane.defmag(xall[j])
+                pot_now += pot_tmp
                 alpha_now += alpha_tmp
                 Gamma_now += Gamma_tmp
             # we need Gamma@A, not Gamma by itself
             Gamma_A_now = Gamma_now@Aall[j]
             # store this slab
+            potall[j] = pot_now
             alphaall[j] = alpha_now
             GammAall[j] = Gamma_A_now
             # compute the lens equation
@@ -604,12 +610,15 @@ class lensmodel:
             if j>=1:
                 xall[j+1] += self.epsilon[j]*(xall[j]-xall[j-1])
                 Aall[j+1] += self.epsilon[j]*(Aall[j]-Aall[j-1])
+            # time delays
+            tgeom = 0.5*np.linalg.norm(xall[j+1]-xall[j],axis=-1)**2
+            tall[j+1] = tall[j] + self.tauhat[j]*(tgeom-self.beta[j]*potall[j])
 
         # return the desired plane
         if oneflag:
-            return xall[stopslab][0],Aall[stopslab][0]
+            return xall[stopslab][0],Aall[stopslab][0],tall[stopslab][0]
         else:
-            return xall[stopslab],Aall[stopslab]
+            return xall[stopslab],Aall[stopslab],tall[stopslab]
 
     ##################################################################
     # compute numerical derivatives d(src)/d(img) and compare them
@@ -623,9 +632,9 @@ class lensmodel:
         hx = np.array([h,0.0])
         hy = np.array([0.0,h])
         # compute
-        x0,A0 = self.lenseqn(xarr)
-        xx,Ax = self.lenseqn(xarr+hx)
-        xy,Ay = self.lenseqn(xarr+hy)
+        x0,A0,dt0 = self.lenseqn(xarr)
+        xx,Ax,dtx = self.lenseqn(xarr+hx)
+        xy,Ay,dty = self.lenseqn(xarr+hy)
         # compute numerical 2nd derivatives
         axx = (xx[:,0]-x0[:,0])/h
         axy = (xy[:,0]-x0[:,0])/h
@@ -775,7 +784,7 @@ class lensmodel:
                 self.imgpts = np.delete(self.imgpts,indx,axis=0)
 
         # positions in source plane, and inverse magnifications
-        u,A = self.lenseqn(self.imgpts,stopslab=stopslab)
+        u,A,dt = self.lenseqn(self.imgpts,stopslab=stopslab)
         self.srcpts = u
         self.minv = np.linalg.det(A)
 
@@ -845,7 +854,7 @@ class lensmodel:
         crittri = self.imgpts[self.tri.simplices[tmp>0]]
         # pick random points in these triangles
         newimg = points_in_triangle(crittri,nnew).reshape((-1,2))
-        u,A = self.lenseqn(newimg)
+        u,A,dt = self.lenseqn(newimg)
         newsrc = u
         newminv = np.linalg.det(A)
         # add them to the lists
@@ -882,7 +891,7 @@ class lensmodel:
     ##################################################################f
 
     def findimg_func(self,x,u,plane):
-        utry,Atry = self.lenseqn(x,plane)
+        utry,Atry,dttry = self.lenseqn(x,plane)
         diff = utry - u
         return diff@diff
 
@@ -901,7 +910,7 @@ class lensmodel:
         # loop over sources
         imgall = []
         muall = []
-        tdall = []
+        dtall = []
         for u in srcarr:
             # find triangles that contain u, and check each of them
             trilist = self.findtri(u)
@@ -916,16 +925,20 @@ class lensmodel:
             # there may be duplicate solutions, so extract the unique ones
             imgarr = get_unique(imgraw,self.xtol)
             # compute magnifications
-            u,A = self.lenseqn(imgarr)
+            u,A,dt = self.lenseqn(imgarr)
             muarr = 1.0/np.linalg.det(A)
+            # we only care about differential time delays
+            dt0 = np.amin(dt)
+            dt = dt - dt0
             # add  to lists
             imgall.append(imgarr)
             muall.append(muarr)
+            dtall.append(dt)
 
         if oneflag:
-            return imgall[0],muall[0]
+            return imgall[0],muall[0],dtall[0]
         else:
-            return imgall,muall
+            return imgall,muall,dtall
 
     ##################################################################
     # solve the lens equation and report the total magnification for
@@ -958,7 +971,7 @@ class lensmodel:
         imgall = []
         muall = []
         for x in xarr:
-            u,A = self.lenseqn(x,plane)
+            u,A,dt = self.lenseqn(x,plane)
             imgarr,muarr = self.findimg(u,plane)
             imgall.append(imgarr)
             muall.append(muarr)
@@ -997,7 +1010,7 @@ class lensmodel:
         ytmp = np.linspace(ylo,yhi,ny)
         xarr = mygrid(xtmp,ytmp)
         # map to source plane
-        uarr,Aarr = self.lenseqn(xarr)
+        uarr,Aarr,tarr = self.lenseqn(xarr)
         # initialize the maps
         srcmap = 0.0*xarr[:,:,0]
         imgmap = 0.0*xarr[:,:,0]
@@ -1033,7 +1046,7 @@ class lensmodel:
         ytmp = np.linspace(ylo,yhi,steps)
         xarr = mygrid(xtmp,ytmp)
         # compute magnifications
-        u,A = self.lenseqn(xarr)
+        u,A,dt = self.lenseqn(xarr)
         mu = 1.0/np.linalg.det(A)
         if signed==False:
             mu = np.absolute(mu)
@@ -1080,7 +1093,7 @@ class lensmodel:
             ypix = ytmp[1]-ytmp[0]
             pixscale = np.array([xpix,ypix])
             # compute magnifications
-            u,A = self.lenseqn(xarr)
+            u,A,dt = self.lenseqn(xarr)
             muinv = np.linalg.det(A)
 
             # get the contours where muinv=0 (python magic!)
@@ -1098,7 +1111,7 @@ class lensmodel:
             for v in cnt.allsegs[0]:
                 # convert from pixel units to arcsec in image plane
                 xcrit = x0 + pixscale*v
-                ucaus,A = self.lenseqn(xcrit)
+                ucaus,A,dt = self.lenseqn(xcrit)
                 self.crit.append(xcrit)
                 self.caus.append(ucaus)
 
@@ -1123,7 +1136,7 @@ class lensmodel:
             # interpolate
             wcrit = (0.0-mA)/(mB-mA)
             xcrit = (1.0-wcrit[:,None])*xA + wcrit[:,None]*xB
-            ucaus,A = self.lenseqn(xcrit)
+            ucaus,A,dt = self.lenseqn(xcrit)
             # what we save needs to be list of lists
             self.crit = [xcrit]
             self.caus = [ucaus]
@@ -1150,7 +1163,7 @@ class lensmodel:
                 xcrit.append(xtmp)
             xcrit = np.array(xcrit)
             # find corresponding caustic points
-            ucaus,A = self.lenseqn(xcrit)
+            ucaus,A,dt = self.lenseqn(xcrit)
             # what we save needs to be list of lists
             self.crit = [xcrit]
             self.caus = [ucaus]
@@ -1183,7 +1196,7 @@ class lensmodel:
 
     def tile2_func(self,w,xA,xB):
         x = (1.0-w)*xA + w*xB
-        u,A = self.lenseqn(x)
+        u,A,dt = self.lenseqn(x)
         return np.linalg.det(A)
 
     ##################################################################
