@@ -237,7 +237,7 @@ def calc_ellpow(parr,x):
         atmp = np.array([alpha_comp.real,alpha_comp.imag])
         Gtmp = np.array([[kappa+gamma_comp.real,gamma_comp.imag],[gamma_comp.imag,kappa-gamma_comp.real]])
 
-        # handle rotation and reorder the to get list of vectors/matrices
+        # handle rotation and reorder to get list of vectors/matrices
         pot += phi.real
         alpha += np.einsum('ij,ja',rot,atmp)
         Gamma += np.einsum('ij,jka,lk',rot,Gtmp,rot)
