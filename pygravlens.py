@@ -740,7 +740,7 @@ class lensmodel:
                                 # solve (intermediate) lens equation to find
                                 # observed position(s) of center(s)
                                 for pfix in plane.pfix:
-                                    pobs,mu = self.findimg(pfix,plane=j)
+                                    pobs,mu,dt = self.findimg(pfix,plane=j)
                                     for p in pobs: centers.append(p)
                 self.centers = np.array(centers)
             else:
@@ -966,7 +966,7 @@ class lensmodel:
     ##################################################################f
 
     def totmag(self,u,plane=-1):
-        imgarr,muarr = self.findimg(u,plane=plane)
+        imgarr,muarr,dtarr = self.findimg(u,plane=plane)
         srcarr = np.array(u)
         if srcarr.ndim==1:
             return np.sum(np.absolute(muarr))
@@ -991,7 +991,7 @@ class lensmodel:
         muall = []
         for x in xarr:
             u,A,dt = self.lenseqn(x,plane)
-            imgarr,muarr = self.findimg(u,plane)
+            imgarr,muarr,dtarr = self.findimg(u,plane)
             imgall.append(imgarr)
             muall.append(muarr)
 
@@ -1250,7 +1250,7 @@ class lensmodel:
             if src.ndim==1: src = np.array([src])
             color_list = iter(cm.hsv(np.linspace(0,1,len(src)+1)))
             for u in src:
-                imgarr,muarr = self.findimg(u)
+                imgarr,muarr,dtarr = self.findimg(u)
                 color = next(color_list)
                 ax[0].plot(imgarr[:,0],imgarr[:,1],'.',color=color)
                 ax[1].plot(u[0],u[1],'.',color=color)
