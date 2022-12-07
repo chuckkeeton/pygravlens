@@ -298,9 +298,13 @@ class lensplane:
     # NOTE: to work with a kappa map, use:
     # - ID = 'kapmap'
     # - parr = basename as used in kappa2lens
+    # - map_scale = arcseconds per pixel [default=1]
+    # - map_align = 'center' [default] or 'corner'
     ##################################################################
 
-    def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl=0.5):
+    def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl=0.5,
+        map_scale=1,map_align='center'):
+
         # store the parameters
         self.ID = ID
         self.kappa = kappa
@@ -309,7 +313,7 @@ class lensplane:
         self.Dl = Dl
         # handle special case of kapmap
         if ID=='kapmap':
-            self.init_kapmap(parr)
+            self.init_kapmap(parr,map_scale,map_align)
         else:
             self.parr = np.array(parr)
             # parr should be list of lists; this handles single-component case
@@ -319,11 +323,18 @@ class lensplane:
     # stuff to process a kapmap model
     ##################################################################
 
-    def init_kapmap(self,basename):
+    def init_kapmap(self,basename,map_scale,map_align):
         with open(basename+'.pkl','rb') as f:
             all_arr = pickle.load(f)
         x_arr = all_arr[0]
         y_arr = all_arr[1]
+        if map_align=='center':
+            x_off = 0.5*(x_arr[0]+x_arr[-1])
+            y_off = 0.5*(y_arr[0]+y_arr[-1])
+            x_arr = x_arr - x_off
+            y_arr = y_arr - y_off
+        x_arr = x_arr*map_scale
+        y_arr = y_arr*map_scale
         ptmp = [0,0]  # code expects first two parameters to be position
         for i in range(2,8):
             # the maps from kappa2lens have the image [y,x] index convention,
@@ -866,6 +877,8 @@ class lensmodel:
         tmp[magprod1<0.0] += 1
         tmp[magprod2<0.0] += 1
         crittri = self.imgpts[self.tri.simplices[tmp>0]]
+        # if there are no critical points, we are done here
+        if len(crittri)==0: return
         # pick random points in these triangles
         newimg = points_in_triangle(crittri,nnew).reshape((-1,2))
         u,A,dt = self.lenseqn(newimg)
