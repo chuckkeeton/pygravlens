@@ -247,7 +247,8 @@ def calc_ellpow(parr,x):
 ################################################################################
 """
 Lens model computed from a kappa map, using the FFT analysis. Here parr
-is the list of interpolation functions for the different lensing quantities.
+contains the list of interpolation functions for the different lensing
+quantities.
 """
 def calc_kapmap(parr,x):
     # initialize
@@ -258,6 +259,26 @@ def calc_kapmap(parr,x):
     xx = x[:,0]
     yy = x[:,1]
 
+    # get and check the boundary mode
+    boundary_mode = parr[0][-1]
+    if boundary_mode=='extrapolate':
+        tmp = 0
+    elif boundary_mode=='clip':
+        tmp = 0
+    elif boundary_mode=='periodic':
+        tmp = 0
+    else:
+        print('ERROR: map_bound not recognized; using extrapolation')
+
+    # if we are using periodic boundary conditions, wrap into main box
+    if boundary_mode=='periodic':
+        x0 = parr[0][8]
+        y0 = parr[0][9]
+        Lx = parr[0][10]
+        Ly = parr[0][11]
+        xx = x0 + np.mod(xx-x0,Lx)
+        yy = y0 + np.mod(yy-y0,Ly)
+
     pot          = parr[0][2].ev(xx,yy)
     alpha[:,0]   = parr[0][3].ev(xx,yy)
     alpha[:,1]   = parr[0][4].ev(xx,yy)
@@ -265,6 +286,21 @@ def calc_kapmap(parr,x):
     Gamma[:,1,1] = parr[0][6].ev(xx,yy)
     Gamma[:,0,1] = parr[0][7].ev(xx,yy)
     Gamma[:,1,0] = parr[0][7].ev(xx,yy)
+
+    # if specified, clip outside the main box
+    if boundary_mode=='clip':
+        xlo = parr[0][8]
+        ylo = parr[0][9]
+        xhi = xlo + parr[0][10]
+        yhi = ylo + parr[0][11]
+        in_box = (xx>=xlo)*(xx<xhi)*(yy>=ylo)*(yy<yhi)
+        pot[~in_box] = 0
+        alpha[~in_box,0] = 0
+        alpha[~in_box,1] = 0
+        Gamma[~in_box,0,0] = 0
+        Gamma[~in_box,1,1] = 0
+        Gamma[~in_box,0,1] = 0
+        Gamma[~in_box,1,0] = 0
 
     return pot,alpha,Gamma
 
@@ -300,10 +336,11 @@ class lensplane:
     # - parr = basename as used in kappa2lens
     # - map_scale = arcseconds per pixel [default=1]
     # - map_align = 'center' [default] or 'corner'
+    # - map_bound = 'extrapolate' or 'clip' or 'periodic'
     ##################################################################
 
     def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl=0.5,
-        map_scale=1,map_align='center'):
+        map_scale=1,map_align='center',map_bound='periodic'):
 
         # store the parameters
         self.ID = ID
@@ -313,7 +350,7 @@ class lensplane:
         self.Dl = Dl
         # handle special case of kapmap
         if ID=='kapmap':
-            self.init_kapmap(parr,map_scale,map_align)
+            self.init_kapmap(parr,map_scale,map_align,map_bound)
         else:
             self.parr = np.array(parr)
             # parr should be list of lists; this handles single-component case
@@ -323,7 +360,7 @@ class lensplane:
     # stuff to process a kapmap model
     ##################################################################
 
-    def init_kapmap(self,basename,map_scale,map_align):
+    def init_kapmap(self,basename,map_scale,map_align,map_bound):
         with open(basename+'.pkl','rb') as f:
             all_arr = pickle.load(f)
         x_arr = all_arr[0]
@@ -335,12 +372,17 @@ class lensplane:
             y_arr = y_arr - y_off
         x_arr = x_arr*map_scale
         y_arr = y_arr*map_scale
-        ptmp = [0,0]  # code expects first two parameters to be position
+        # code expects first two parameters to be position
+        ptmp = [0, 0]
         for i in range(2,8):
             # the maps from kappa2lens have the image [y,x] index convention,
             # so we need to take transpose to get what spline expects
             tmpfunc = RectBivariateSpline(x_arr,y_arr,all_arr[i].T,kx=3,ky=3)
             ptmp.append(tmpfunc)
+        # remaining parameters give lower left corner and periods
+        Lx = len(x_arr)*(x_arr[1]-x_arr[0])
+        Ly = len(y_arr)*(y_arr[1]-y_arr[0])
+        ptmp = ptmp + [x_arr[0], y_arr[0], Lx, Ly, map_bound]
         self.parr = [ptmp]
 
     ##################################################################
@@ -644,6 +686,16 @@ class lensmodel:
             return xall[stopslab][0],Aall[stopslab][0],tall[stopslab][0]
         else:
             return xall[stopslab],Aall[stopslab],tall[stopslab]
+
+    ##################################################################
+    # compute deflection vector and Gamma tensor at a set of
+    # positions; position array can have arbitrary shape
+    ##################################################################
+
+    def defmag(self,xarr,stopslab=-1):
+        u,A,dt = self.lenseqn(xarr,stopslab=stopslab)
+        alpha = xarr - u
+        return alpha,A
 
     ##################################################################
     # compute numerical derivatives d(src)/d(img) and compare them
