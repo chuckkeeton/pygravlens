@@ -623,10 +623,11 @@ class lensmodel:
     # lens equation; take an arbitrary set of image positions and return
     # the corresponding set of source positions; can handle multiplane
     # lensing; stopslab can be used to stop at some specified plane,
-    # and stopslab<0 means go all the way to the source
+    # and stopslab<0 means go all the way to the source; if
+    # output3d==True, return all planes
     ##################################################################
 
-    def lenseqn(self,xarr,stopslab=-1):
+    def lenseqn(self,xarr,stopslab=-1,output3d=False):
         if stopslab<0: stopslab = len(self.slab_list)
         xarr = np.array(xarr)
         # need special treatment if xarr is a single point
@@ -643,6 +644,7 @@ class lensmodel:
         Aall = np.zeros([self.nslab+1]+xshape+[2,2])
         potall   = np.zeros([self.nslab+1]+xshape)
         alphaall = np.zeros([self.nslab+1]+xshape+[2])
+        Gamm_all = np.zeros([self.nslab+1]+xshape+[2,2])
         GammAall = np.zeros([self.nslab+1]+xshape+[2,2])
 
         # set of identity matrices for all positions
@@ -670,6 +672,7 @@ class lensmodel:
             # store this slab
             potall[j] = pot_now
             alphaall[j] = alpha_now
+            Gamm_all[j] = Gamma_now
             GammAall[j] = Gamma_A_now
             # compute the lens equation
             xall[j+1] = xall[j] - self.beta[j]*alphaall[j]
@@ -681,11 +684,18 @@ class lensmodel:
             tgeom = 0.5*np.linalg.norm(xall[j+1]-xall[j],axis=-1)**2
             tall[j+1] = tall[j] + self.tauhat[j]*(tgeom-self.beta[j]*potall[j])
 
-        # return the desired plane
-        if oneflag:
-            return xall[stopslab][0],Aall[stopslab][0],tall[stopslab][0]
+        if output3d==True:
+            # return the desired plane
+            if oneflag:
+                return xall[:][0],Aall[:][0],tall[:][0]
+            else:
+                return xall,Aall,tall
         else:
-            return xall[stopslab],Aall[stopslab],tall[stopslab]
+            # return the desired plane
+            if oneflag:
+                return xall[stopslab][0],Aall[stopslab][0],tall[stopslab][0]
+            else:
+                return xall[stopslab],Aall[stopslab],tall[stopslab]
 
     ##################################################################
     # compute deflection vector and Gamma tensor at a set of
