@@ -85,6 +85,18 @@ def beta2d(beta,di):
 
 ################################################################################
 """
+none
+parameters = [],
+"""
+def calc_none(parr,x):
+    # everything is 0
+    pot = np.zeros(len(x))
+    alpha = np.zeros((len(x),2))
+    Gamma = np.zeros((len(x),2,2))
+    return pot,alpha,Gamma
+
+################################################################################
+"""
 point mass
 parameters = [x0,y0,thetaE,s]
 The softening length s is optional; if not specified, it is set using
@@ -309,6 +321,7 @@ def calc_kapmap(parr,x):
 dictionary with known models
 """
 massmodel = {
+    'none'   : calc_none,
     'ptmass' : calc_ptmass,
     'SIS'    : calc_SIS,
     'ellpow' : calc_ellpow,
@@ -1348,6 +1361,72 @@ class lensmodel:
             f.show()
         else:
             f.savefig(file,bbox_inches='tight')
+
+    ##################################################################
+    # compute deflection statistics for a set of points; specifically,
+    # move the points randomly and report mean and covariance matrix
+    # - xarr: set of points where deflections are computed
+    # - extent=[xlo,xhi,ylo,yhi]: range spanned by shifted positions
+    # - Nsamp: number of random samples to use
+    # - rotate: whether to apply random rotations
+    # - refimg: if given, compute differential deflections relative
+    #     to the specified image; if None, use full deflections
+    # - fullout: whether to return all of the samples as well as the
+    #     summary statistics
+    # Output:
+    # - mean vector, covariance matrix, and optional full set of samples
+    ##################################################################
+
+    def DefStats(self,xarr,extent=[],Nsamp=1000,rotate=True,refimg=0,
+                 fullout=False):
+
+        if len(extent)==0:
+            print('Error: extent must be specified')
+            return
+        xlo,xhi,ylo,yhi = extent
+
+        # find center of box containing points
+        xbar = 0.5*(np.amax(xarr,axis=0)+np.amin(xarr,axis=0))
+        # shift to box frame
+        xshift = xarr-xbar
+        # find maximum distance from center of box
+        rmax = np.sort(np.linalg.norm(xshift,axis=1))[-1]
+
+        # generate the samples
+        samples = []
+        for isamp in range(Nsamp):
+            # pick random shift; make sure all points stay within range specified by 'extent'
+            xoff = np.random.uniform(low=[xlo+rmax,ylo+rmax],high=[xhi-rmax,yhi-rmax],size=2)
+            # if we are rotating, pick random rotation matrix
+            if rotate:
+                theta = np.random.uniform(low=0,high=2*np.pi)
+                ct = np.cos(theta)
+                st = np.sin(theta)
+                rot = np.array([[ct,-st],[st,ct]])
+            else:
+                rot = np.eye(2)
+            # transformed points
+            xsamp = xshift@rot.T + xoff
+            # compute deflections
+            defarr,Aarr = self.defmag(xsamp)
+            # see if we are computing differential deflections
+            if refimg is None:
+                ddefarr = defarr + 0
+            else:
+                ddefarr = defarr - defarr[refimg]
+            # append to samples list
+            samples.append(ddefarr.flatten())
+        samples = np.array(samples)
+
+        # compute stats
+        defavg = np.mean(samples,axis=0)
+        defcov = np.cov(samples,rowvar=False)
+
+        if fullout:
+            return defavg,defcov,samples
+        else:
+            return defavg,defcov
+
 
 
 ################################################################################
