@@ -85,6 +85,18 @@ def beta2d(beta,di):
 
 ################################################################################
 """
+none
+parameters = [],
+"""
+def calc_none(parr,x):
+    # everything is 0
+    pot = np.zeros(len(x))
+    alpha = np.zeros((len(x),2))
+    Gamma = np.zeros((len(x),2,2))
+    return pot,alpha,Gamma
+
+################################################################################
+"""
 point mass
 parameters = [x0,y0,thetaE,s]
 The softening length s is optional; if not specified, it is set using
@@ -247,7 +259,8 @@ def calc_ellpow(parr,x):
 ################################################################################
 """
 Lens model computed from a kappa map, using the FFT analysis. Here parr
-is the list of interpolation functions for the different lensing quantities.
+contains the list of interpolation functions for the different lensing
+quantities.
 """
 def calc_kapmap(parr,x):
     # initialize
@@ -258,6 +271,26 @@ def calc_kapmap(parr,x):
     xx = x[:,0]
     yy = x[:,1]
 
+    # get and check the boundary mode
+    boundary_mode = parr[0][-1]
+    if boundary_mode=='extrapolate':
+        tmp = 0
+    elif boundary_mode=='clip':
+        tmp = 0
+    elif boundary_mode=='periodic':
+        tmp = 0
+    else:
+        print('ERROR: map_bound not recognized; using extrapolation')
+
+    # if we are using periodic boundary conditions, wrap into main box
+    if boundary_mode=='periodic':
+        x0 = parr[0][8]
+        y0 = parr[0][9]
+        Lx = parr[0][10]
+        Ly = parr[0][11]
+        xx = x0 + np.mod(xx-x0,Lx)
+        yy = y0 + np.mod(yy-y0,Ly)
+
     pot          = parr[0][2].ev(xx,yy)
     alpha[:,0]   = parr[0][3].ev(xx,yy)
     alpha[:,1]   = parr[0][4].ev(xx,yy)
@@ -266,6 +299,21 @@ def calc_kapmap(parr,x):
     Gamma[:,0,1] = parr[0][7].ev(xx,yy)
     Gamma[:,1,0] = parr[0][7].ev(xx,yy)
 
+    # if specified, clip outside the main box
+    if boundary_mode=='clip':
+        xlo = parr[0][8]
+        ylo = parr[0][9]
+        xhi = xlo + parr[0][10]
+        yhi = ylo + parr[0][11]
+        in_box = (xx>=xlo)*(xx<xhi)*(yy>=ylo)*(yy<yhi)
+        pot[~in_box] = 0
+        alpha[~in_box,0] = 0
+        alpha[~in_box,1] = 0
+        Gamma[~in_box,0,0] = 0
+        Gamma[~in_box,1,1] = 0
+        Gamma[~in_box,0,1] = 0
+        Gamma[~in_box,1,0] = 0
+
     return pot,alpha,Gamma
 
 ################################################################################
@@ -273,6 +321,7 @@ def calc_kapmap(parr,x):
 dictionary with known models
 """
 massmodel = {
+    'none'   : calc_none,
     'ptmass' : calc_ptmass,
     'SIS'    : calc_SIS,
     'ellpow' : calc_ellpow,
@@ -300,10 +349,11 @@ class lensplane:
     # - parr = basename as used in kappa2lens
     # - map_scale = arcseconds per pixel [default=1]
     # - map_align = 'center' [default] or 'corner'
+    # - map_bound = 'extrapolate' or 'clip' or 'periodic'
     ##################################################################
 
     def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl=0.5,
-        map_scale=1,map_align='center'):
+        map_scale=1,map_align='center',map_bound='periodic'):
 
         # store the parameters
         self.ID = ID
@@ -313,7 +363,7 @@ class lensplane:
         self.Dl = Dl
         # handle special case of kapmap
         if ID=='kapmap':
-            self.init_kapmap(parr,map_scale,map_align)
+            self.init_kapmap(parr,map_scale,map_align,map_bound)
         else:
             self.parr = np.array(parr)
             # parr should be list of lists; this handles single-component case
@@ -323,7 +373,7 @@ class lensplane:
     # stuff to process a kapmap model
     ##################################################################
 
-    def init_kapmap(self,basename,map_scale,map_align):
+    def init_kapmap(self,basename,map_scale,map_align,map_bound):
         with open(basename+'.pkl','rb') as f:
             all_arr = pickle.load(f)
         x_arr = all_arr[0]
@@ -335,12 +385,17 @@ class lensplane:
             y_arr = y_arr - y_off
         x_arr = x_arr*map_scale
         y_arr = y_arr*map_scale
-        ptmp = [0,0]  # code expects first two parameters to be position
+        # code expects first two parameters to be position
+        ptmp = [0, 0]
         for i in range(2,8):
             # the maps from kappa2lens have the image [y,x] index convention,
             # so we need to take transpose to get what spline expects
             tmpfunc = RectBivariateSpline(x_arr,y_arr,all_arr[i].T,kx=3,ky=3)
             ptmp.append(tmpfunc)
+        # remaining parameters give lower left corner and periods
+        Lx = len(x_arr)*(x_arr[1]-x_arr[0])
+        Ly = len(y_arr)*(y_arr[1]-y_arr[0])
+        ptmp = ptmp + [x_arr[0], y_arr[0], Lx, Ly, map_bound]
         self.parr = [ptmp]
 
     ##################################################################
@@ -581,10 +636,11 @@ class lensmodel:
     # lens equation; take an arbitrary set of image positions and return
     # the corresponding set of source positions; can handle multiplane
     # lensing; stopslab can be used to stop at some specified plane,
-    # and stopslab<0 means go all the way to the source
+    # and stopslab<0 means go all the way to the source; if
+    # output3d==True, return all planes
     ##################################################################
 
-    def lenseqn(self,xarr,stopslab=-1):
+    def lenseqn(self,xarr,stopslab=-1,output3d=False):
         if stopslab<0: stopslab = len(self.slab_list)
         xarr = np.array(xarr)
         # need special treatment if xarr is a single point
@@ -601,6 +657,7 @@ class lensmodel:
         Aall = np.zeros([self.nslab+1]+xshape+[2,2])
         potall   = np.zeros([self.nslab+1]+xshape)
         alphaall = np.zeros([self.nslab+1]+xshape+[2])
+        Gamm_all = np.zeros([self.nslab+1]+xshape+[2,2])
         GammAall = np.zeros([self.nslab+1]+xshape+[2,2])
 
         # set of identity matrices for all positions
@@ -628,6 +685,7 @@ class lensmodel:
             # store this slab
             potall[j] = pot_now
             alphaall[j] = alpha_now
+            Gamm_all[j] = Gamma_now
             GammAall[j] = Gamma_A_now
             # compute the lens equation
             xall[j+1] = xall[j] - self.beta[j]*alphaall[j]
@@ -639,11 +697,28 @@ class lensmodel:
             tgeom = 0.5*np.linalg.norm(xall[j+1]-xall[j],axis=-1)**2
             tall[j+1] = tall[j] + self.tauhat[j]*(tgeom-self.beta[j]*potall[j])
 
-        # return the desired plane
-        if oneflag:
-            return xall[stopslab][0],Aall[stopslab][0],tall[stopslab][0]
+        if output3d==True:
+            # return the desired plane
+            if oneflag:
+                return xall[:][0],Aall[:][0],tall[:][0]
+            else:
+                return xall,Aall,tall
         else:
-            return xall[stopslab],Aall[stopslab],tall[stopslab]
+            # return the desired plane
+            if oneflag:
+                return xall[stopslab][0],Aall[stopslab][0],tall[stopslab][0]
+            else:
+                return xall[stopslab],Aall[stopslab],tall[stopslab]
+
+    ##################################################################
+    # compute deflection vector and Gamma tensor at a set of
+    # positions; position array can have arbitrary shape
+    ##################################################################
+
+    def defmag(self,xarr,stopslab=-1):
+        u,A,dt = self.lenseqn(xarr,stopslab=stopslab)
+        alpha = xarr - u
+        return alpha,A
 
     ##################################################################
     # compute numerical derivatives d(src)/d(img) and compare them
@@ -1286,6 +1361,72 @@ class lensmodel:
             f.show()
         else:
             f.savefig(file,bbox_inches='tight')
+
+    ##################################################################
+    # compute deflection statistics for a set of points; specifically,
+    # move the points randomly and report mean and covariance matrix
+    # - xarr: set of points where deflections are computed
+    # - extent=[xlo,xhi,ylo,yhi]: range spanned by shifted positions
+    # - Nsamp: number of random samples to use
+    # - rotate: whether to apply random rotations
+    # - refimg: if given, compute differential deflections relative
+    #     to the specified image; if None, use full deflections
+    # - fullout: whether to return all of the samples as well as the
+    #     summary statistics
+    # Output:
+    # - mean vector, covariance matrix, and optional full set of samples
+    ##################################################################
+
+    def DefStats(self,xarr,extent=[],Nsamp=1000,rotate=True,refimg=0,
+                 fullout=False):
+
+        if len(extent)==0:
+            print('Error: extent must be specified')
+            return
+        xlo,xhi,ylo,yhi = extent
+
+        # find center of box containing points
+        xbar = 0.5*(np.amax(xarr,axis=0)+np.amin(xarr,axis=0))
+        # shift to box frame
+        xshift = xarr-xbar
+        # find maximum distance from center of box
+        rmax = np.sort(np.linalg.norm(xshift,axis=1))[-1]
+
+        # generate the samples
+        samples = []
+        for isamp in range(Nsamp):
+            # pick random shift; make sure all points stay within range specified by 'extent'
+            xoff = np.random.uniform(low=[xlo+rmax,ylo+rmax],high=[xhi-rmax,yhi-rmax],size=2)
+            # if we are rotating, pick random rotation matrix
+            if rotate:
+                theta = np.random.uniform(low=0,high=2*np.pi)
+                ct = np.cos(theta)
+                st = np.sin(theta)
+                rot = np.array([[ct,-st],[st,ct]])
+            else:
+                rot = np.eye(2)
+            # transformed points
+            xsamp = xshift@rot.T + xoff
+            # compute deflections
+            defarr,Aarr = self.defmag(xsamp)
+            # see if we are computing differential deflections
+            if refimg is None:
+                ddefarr = defarr + 0
+            else:
+                ddefarr = defarr - defarr[refimg]
+            # append to samples list
+            samples.append(ddefarr.flatten())
+        samples = np.array(samples)
+
+        # compute stats
+        defavg = np.mean(samples,axis=0)
+        defcov = np.cov(samples,rowvar=False)
+
+        if fullout:
+            return defavg,defcov,samples
+        else:
+            return defavg,defcov
+
 
 
 ################################################################################
