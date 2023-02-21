@@ -1393,7 +1393,8 @@ class lensmodel:
         rmax = np.sort(np.linalg.norm(xshift,axis=1))[-1]
 
         # generate the samples
-        samples = []
+        xsamp_all = []
+        defsamp_all = []
         for isamp in range(Nsamp):
             # pick random shift; make sure all points stay within range specified by 'extent'
             xoff = np.random.uniform(low=[xlo+rmax,ylo+rmax],high=[xhi-rmax,yhi-rmax],size=2)
@@ -1414,16 +1415,18 @@ class lensmodel:
                 ddefarr = defarr + 0
             else:
                 ddefarr = defarr - defarr[refimg]
-            # append to samples list
-            samples.append(ddefarr.flatten())
-        samples = np.array(samples)
+            # append to samples lists
+            xsamp_all.append(xsamp)
+            defsamp_all.append(ddefarr.flatten())
+        xsamp_all = np.array(xsamp_all)
+        defsamp_all = np.array(defsamp_all)
 
         # compute stats
-        defavg = np.mean(samples,axis=0)
-        defcov = np.cov(samples,rowvar=False)
+        defavg = np.mean(defsamp_all,axis=0)
+        defcov = np.cov(defsamp_all,rowvar=False)
 
         if fullout:
-            return defavg,defcov,samples
+            return defavg,defcov,xsamp_all,defsamp_all
         else:
             return defavg,defcov
 
