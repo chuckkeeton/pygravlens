@@ -1378,7 +1378,7 @@ class lensmodel:
     ##################################################################
 
     def DefStats(self,xarr,extent=[],Nsamp=1000,rotate=True,refimg=0,
-                 fullout=False):
+                 fullout=False,fitshear=False):
 
         if len(extent)==0:
             print('Error: extent must be specified')
@@ -1418,6 +1418,32 @@ class lensmodel:
             # append to samples lists
             xsamp_all.append(xsamp)
             defsamp_all.append(ddefarr.flatten())
+            # CRK HERE
+            if fitshear:
+                if refimg is None:
+                    print('Error: DefStats cannot do shear analysis without a reference image')
+                    return
+                xi = xsamp[:,0] - xsamp[refimg,0]
+                yi = xsamp[:,1] - xsamp[refimg,1]
+                axi = defarr[:,0] - defarr[refimg,0]
+                ayi = defarr[:,1] - defarr[refimg,1]
+                lhs = np.zeros((3,3))
+                rhs = np.zeros(3)
+                lhs[0,0] = np.sum(xi*xi+yi*yi)
+                lhs[0,1] = np.sum(xi*xi-yi*yi)
+                lhs[0,2] = np.sum(2*xi*yi)
+                rhs[0] = np.sum(xi*axi+yi*ayi)
+                lhs[1,0] = np.sum(xi*xi-yi*yi)
+                lhs[1,1] = np.sum(xi*xi+yi*yi)
+                lhs[1,2] = np.sum(0*xi*yi)
+                rhs[1] = np.sum(xi*axi-yi*ayi)
+                lhs[2,0] = np.sum(2*xi*yi)
+                lhs[2,1] = np.sum(0*xi*yi)
+                lhs[2,2] = np.sum(xi*xi+yi*yi)
+                rhs[2] = np.sum(yi*axi+xi*ayi)
+                ans = np.linalg.solve(lhs,rhs)
+                Gammat = np.array([[ans[0]+ans[1],ans[2]],[ans[2],ans[0]-ans[1]]])
+                ddefarr2 = ddefarr - (xsamp-xsamp[refimg])@Gammat.T
         xsamp_all = np.array(xsamp_all)
         defsamp_all = np.array(defsamp_all)
 
