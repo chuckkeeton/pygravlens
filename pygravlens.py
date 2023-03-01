@@ -1395,6 +1395,7 @@ class lensmodel:
         # generate the samples
         xsamp_all = []
         defsamp_all = []
+        if fitshear: kapgam_all = []
         for isamp in range(Nsamp):
             # pick random shift; make sure all points stay within range specified by 'extent'
             xoff = np.random.uniform(low=[xlo+rmax,ylo+rmax],high=[xhi-rmax,yhi-rmax],size=2)
@@ -1423,10 +1424,13 @@ class lensmodel:
                 if refimg is None:
                     print('Error: DefStats cannot do shear analysis without a reference image')
                     return
+                # differential positions and deflections
                 xi = xsamp[:,0] - xsamp[refimg,0]
                 yi = xsamp[:,1] - xsamp[refimg,1]
                 axi = defarr[:,0] - defarr[refimg,0]
                 ayi = defarr[:,1] - defarr[refimg,1]
+                # set up the matrix and vector needed to solve for
+                # kappa, gammac, gammas
                 lhs = np.zeros((3,3))
                 rhs = np.zeros(3)
                 lhs[0,0] = np.sum(xi*xi+yi*yi)
@@ -1441,20 +1445,26 @@ class lensmodel:
                 lhs[2,1] = np.sum(0*xi*yi)
                 lhs[2,2] = np.sum(xi*xi+yi*yi)
                 rhs[2] = np.sum(yi*axi+xi*ayi)
+                # solve
                 ans = np.linalg.solve(lhs,rhs)
+                kapgam_all.append(ans)
+                # set up the Gamma matrix
                 Gammat = np.array([[ans[0]+ans[1],ans[2]],[ans[2],ans[0]-ans[1]]])
+                # compute the remaining deflections after accounting
+                # for convergence and shear
                 ddefarr2 = ddefarr - (xsamp-xsamp[refimg])@Gammat.T
         xsamp_all = np.array(xsamp_all)
         defsamp_all = np.array(defsamp_all)
+        if fitshear: kapgam_all = np.array(kapgam_all)
 
         # compute stats
         defavg = np.mean(defsamp_all,axis=0)
         defcov = np.cov(defsamp_all,rowvar=False)
 
-        if fullout:
-            return defavg,defcov,xsamp_all,defsamp_all
-        else:
-            return defavg,defcov
+        ans = [defavg,defcov]
+        if fullout: ans = ans + [xsamp_all,defsamp_all]
+        if fitshear: ans = ans + [kapgam_all]
+        return ans
 
 
 
