@@ -1416,10 +1416,9 @@ class lensmodel:
                 ddefarr = defarr + 0
             else:
                 ddefarr = defarr - defarr[refimg]
-            # append to samples lists
-            xsamp_all.append(xsamp)
-            defsamp_all.append(ddefarr.flatten())
-            # CRK HERE
+            # if desired, fit and remove a convergence/shear model to the
+            # deflections; the remaining deflections represent contributions
+            # beyond convergence and shear
             if fitshear:
                 if refimg is None:
                     print('Error: DefStats cannot do shear analysis without a reference image')
@@ -1452,7 +1451,10 @@ class lensmodel:
                 Gammat = np.array([[ans[0]+ans[1],ans[2]],[ans[2],ans[0]-ans[1]]])
                 # compute the remaining deflections after accounting
                 # for convergence and shear
-                ddefarr2 = ddefarr - (xsamp-xsamp[refimg])@Gammat.T
+                ddefarr = ddefarr - (xsamp-xsamp[refimg])@Gammat.T
+            # append to samples lists
+            xsamp_all.append(xsamp)
+            defsamp_all.append(ddefarr.flatten())
         xsamp_all = np.array(xsamp_all)
         defsamp_all = np.array(defsamp_all)
         if fitshear: kapgam_all = np.array(kapgam_all)
