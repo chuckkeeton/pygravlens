@@ -686,6 +686,11 @@ class lensmodel:
         Gamm_all = np.zeros([self.nslab+1]+xshape+[2,2])
         GammAall = np.zeros([self.nslab+1]+xshape+[2,2])
 
+        # create local versions of beta and epsilon, which can be updated for Dsrc
+        beta    = np.array([ np.full(xshape,b) for b in self.beta ])
+        epsilon = np.array([ np.full(xshape,e) for e in self.epsilon ])
+        print('CRK check',self.nslab,beta.shape,epsilon.shape)
+
         # set of identity matrices for all positions
         tmp0 = np.zeros(xshape)
         tmp1 = tmp0 + 1.0
