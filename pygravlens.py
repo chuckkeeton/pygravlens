@@ -659,7 +659,7 @@ class lensmodel:
     #   stopslab<0 means go all the way to the source
     # - if Dsrc is positive and finite, the source plane is set to
     #   this distance and the model is rescaled accordingly
-    #   + Dsrc should be a comoving distance in the same units used
+    #   + Dsrc must be a comoving distance in the same units used
     #     to specify the original Ds for the model
     #   + Dsrc can be an array so different positions have different
     #     distances
