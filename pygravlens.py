@@ -495,6 +495,11 @@ class lensmodel:
     # initialize with a list of lensplane structures
     # - xtol is the tolerance used for finding images
     # - Ds is the comoving distance to the source (can be 1)
+    #   + if Ds is a scalar, the time delay factor t0 is set to 1
+    # - Dref is the comoving distance to the source plane for which
+    #   the model is normalized
+    #   + if Dref<=0, Dref is assumed to be the same as Ds
+    #   + Dref can be np.inf for a model normalized with Dls/Ds=1
     # - position_mode is important for multiplane lensing;
     #   + 'obs' indicates that the specified positions are observed,
     #     so the intrinsic positions must account for foreground bending
@@ -506,12 +511,13 @@ class lensmodel:
     # - Ddecimals is the number of decimals to use when rounding distances
     ##################################################################
 
-    def __init__(self,plane_list,xtol=1.0e-5,Ds=1,length_unit=u.arcsec,position_mode='obs',multi_mode=[],Ddecimals=3):
+    def __init__(self,plane_list,xtol=1.0e-5,Ds=1,Dref=0,length_unit=u.arcsec,position_mode='obs',multi_mode=[],Ddecimals=3):
         self.xtol = xtol
         self.Ds = Ds
+        self.Dref = Dref
         self.length_unit = length_unit
         self.position_mode = position_mode
-
+        
         # factor for time delays
         if np.isscalar(Ds):
             self.tfac = 1
@@ -549,6 +555,17 @@ class lensmodel:
             slab = [ plane_list[j] for j in np.where(iarr==i)[0] ]
             self.slab_list.append(slab)
         self.nslab = len(self.slab_list)
+        # store the scaled distances for the slabs
+        self.darr = darr
+
+        # scaled version of the reference distance
+        if self.Dref<=0:
+            # Dref is assumed to match Ds
+            dref_scaled = 1
+        elif np.isfinite(self.Dref):
+            dref_scaled = self.Dref/self.Ds
+        else:
+            dref_scaled = np.inf
 
         # process multi_mode
         if len(multi_mode)==0:
@@ -559,7 +576,9 @@ class lensmodel:
             self.beta = np.zeros(self.nslab)
             self.tauhat = np.zeros(self.nslab)
             for j in range(self.nslab):
-                self.beta[j] = (darr[j+1]-darr[j])*darr[-1]/(darr[j+1]*(darr[-1]-darr[j]))
+                # Dls/Ds for reference distance; will be 1 for Dref=np.inf
+                Dfac = 1 - darr[j]/dref_scaled
+                self.beta[j] = (darr[j+1]-darr[j])/(darr[j+1]*Dfac)
                 self.tauhat[j] = darr[j]*darr[j+1]/((darr[j+1]-darr[j])*darr[-1])
             # compute epsilon factors; here it helps to prepend darr with 0,
             # but then we have to take care with the indexing
@@ -635,12 +654,19 @@ class lensmodel:
     ##################################################################
     # lens equation; take an arbitrary set of image positions and return
     # the corresponding set of source positions; can handle multiplane
-    # lensing; stopslab can be used to stop at some specified plane,
-    # and stopslab<0 means go all the way to the source; if
-    # output3d==True, return all planes
+    # lensing
+    # - stopslab can be used to stop at some specified plane;
+    #   stopslab<0 means go all the way to the source
+    # - if Dsrc is positive and finite, the source plane is set to
+    #   this distance and the model is rescaled accordingly
+    #   + Dsrc should be a comoving distance in the same units used
+    #     to specify the original Ds for the model
+    #   + Dsrc can be an array so different positions have different
+    #     distances
+    # - output3d==True means return all planes
     ##################################################################
 
-    def lenseqn(self,xarr,stopslab=-1,output3d=False):
+    def lenseqn(self,xarr,stopslab=-1,Dsrc=0,output3d=False):
         if stopslab<0: stopslab = len(self.slab_list)
         xarr = np.array(xarr)
         # need special treatment if xarr is a single point
