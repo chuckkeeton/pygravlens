@@ -790,12 +790,12 @@ class lensmodel:
 
     ##################################################################
     # compute deflection vector and Gamma tensor at a set of
-    # positions; position array can have arbitrary shape
+    # positions; position array can have arbitrary shape;
+    # can handle updated source distance(s) through Dsnew
     ##################################################################
 
-    # CRK HERE need to add Dsnew here and below
-    def defmag(self,xarr,stopslab=-1):
-        u,A,dt = self.lenseqn(xarr,stopslab=stopslab)
+    def defmag(self,xarr,stopslab=-1,Dsnew=None):
+        u,A,dt = self.lenseqn(xarr,stopslab=stopslab,Dsnew=Dsnew)
         alpha = xarr - u
         return alpha,A
 
@@ -1068,15 +1068,16 @@ class lensmodel:
 
     ##################################################################
     # solve the lens equation and report the image(s) for a given
-    # source position or set of source positions
+    # source position or set of source positions;
+    # can handle updated source distance(s) through Dsnew
     ##################################################################f
 
-    def findimg_func(self,x,u,plane):
-        utry,Atry,dttry = self.lenseqn(x,plane)
+    def findimg_func(self,x,u,plane,Dsnew):
+        utry,Atry,dttry = self.lenseqn(x,stopslab=plane,Dsnew=Dsnew)
         diff = utry - u
         return diff@diff
 
-    def findimg(self,u,plane=-1):
+    def findimg(self,u,plane=-1,Dsnew=None):
         if self.griddone==False:
             print('Error: tiling has not been completed')
             return [],[]
@@ -1088,11 +1089,27 @@ class lensmodel:
         else:
             oneflag = False
 
+        # local version of distance stuff; we want Dsarr and tfac
+        # to be lists aligned with the sources
+        if (Dsnew is None):
+            Dsarr = [None]*len(srcarr)
+            tfac = [self.tfac]*len(srcarr)
+        else:
+            Dsarr = Dsnew
+            tfac = self.calc_tfac(Dsnew)
+            if len(np.array(Dsnew).shape)==0:
+                # Dsnew is a scalar; this is a hack to create lists
+                # with the right length
+                Dsarr = [ 0*u[0]+Dsnew for u in srcarr ]
+                tfac = [ 0*u[0]+tfac for u in srcarr ]
+        print('CRK HERE Dsarr',Dsarr)
+        print('CRK HERE tfac',tfac)
+
         # loop over sources
         imgall = []
         muall = []
         dtall = []
-        for u in srcarr:
+        for iu,u in enumerate(srcarr):
             # find triangles that contain u, and check each of them
             trilist = self.findtri(u)
             imgraw = []
@@ -1100,13 +1117,13 @@ class lensmodel:
                 # run scipy.optimize.minimize starting from the triangle mean
                 tri = self.imgpoly[itri,:3]
                 xtri = np.mean(tri,axis=0)
-                ans = minimize(self.findimg_func,xtri,args=(u,plane),method='Nelder-Mead',options={'initial_simplex':tri,'xatol':0.01*self.xtol,'fatol':1.e-6*self.xtol**2})
+                ans = minimize(self.findimg_func,xtri,args=(u,plane,Dsarr[iu]),method='Nelder-Mead',options={'initial_simplex':tri,'xatol':0.01*self.xtol,'fatol':1.e-6*self.xtol**2})
                 if ans.success: imgraw.append(ans.x)
             imgraw = np.array(imgraw)
             # there may be duplicate solutions, so extract the unique ones
             imgarr = get_unique(imgraw,self.xtol)
             # compute magnifications
-            u,A,dt = self.lenseqn(imgarr)
+            u,A,dt = self.lenseqn(imgarr,stopslab=plane,Dsnew=Dsarr[iu])
             muarr = 1.0/np.linalg.det(A)
             # we only care about differential time delays
             dt0 = np.amin(dt)
@@ -1119,8 +1136,11 @@ class lensmodel:
             # add  to lists
             imgall.append(imgarr[indx])
             muall.append(muarr[indx])
-            # CRK HERE NEED TO UPDATE tfac for different source distances
-            dtall.append(self.tfac*dt[indx])
+            # note: make sure to use correct tfac for this source
+            print('CRK check tdel')
+            print(tfac[iu])
+            print(dt[indx])
+            dtall.append(tfac[iu]*dt[indx])
 
         if oneflag:
             return imgall[0],muall[0],dtall[0]
@@ -1130,11 +1150,12 @@ class lensmodel:
     ##################################################################
     # solve the lens equation and report the total magnification for
     # a given source position or set of source positions; this is
-    # largely a wrapper for findimg()
+    # largely a wrapper for findimg();
+    # can handle updated source distance(s) through Dsnew
     ##################################################################f
 
-    def totmag(self,u,plane=-1):
-        imgarr,muarr,dtarr = self.findimg(u,plane=plane)
+    def totmag(self,u,plane=-1,Dsnew=None):
+        imgarr,muarr,dtarr = self.findimg(u,plane=plane,Dsnew=Dsnew)
         srcarr = np.array(u)
         if srcarr.ndim==1:
             return np.sum(np.absolute(muarr))
@@ -1143,10 +1164,11 @@ class lensmodel:
 
     ##################################################################
     # given an image position, find the corresponding source and then
-    # solve the lens equation to find all of the counter images
+    # solve the lens equation to find all of the counter images;
+    # can handle updated source distance(s) through Dsnew
     ##################################################################
 
-    def findsrc(self,xarr,plane=-1):
+    def findsrc(self,xarr,plane=-1,Dsnew=None):
         xarr = np.array(xarr)
         if xarr.ndim==1:
             xarr = np.array([xarr])
@@ -1158,6 +1180,7 @@ class lensmodel:
         imgall = []
         muall = []
         for x in xarr:
+            # CRK HERE NEED TO HANDLE Dsnew
             u,A,dt = self.lenseqn(x,plane)
             imgarr,muarr,dtarr = self.findimg(u,plane)
             imgall.append(imgarr)
