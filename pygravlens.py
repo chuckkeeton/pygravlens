@@ -498,7 +498,7 @@ class lensmodel:
     #   + if Ds is a scalar, the time delay factor t0 is set to 1
     # - Dref is the comoving distance to the source plane for which
     #   the model is normalized
-    #   + if Dref<=0, Dref is assumed to be the same as Ds
+    #   + if Dref is None or <=0, Dref is assumed to be the same as Ds
     #   + Dref can be np.inf for a model normalized with Dls/Ds=1
     # - position_mode is important for multiplane lensing;
     #   + 'obs' indicates that the specified positions are observed,
@@ -511,38 +511,14 @@ class lensmodel:
     # - Ddecimals is the number of decimals to use when rounding distances
     ##################################################################
 
-    def __init__(self,plane_list,xtol=1.0e-5,Ds=1,Dref=0,length_unit=u.arcsec,position_mode='obs',multi_mode=[],Ddecimals=3):
+    def __init__(self,plane_list,xtol=1.0e-5,Ds=1,Dref=None,length_unit=u.arcsec,position_mode='obs',multi_mode=[],Ddecimals=3):
         self.xtol = xtol
         self.Ds = Ds
-        self.Dref = Dref
         self.length_unit = length_unit
         self.position_mode = position_mode
-        
+
         # factor for time delays
-        if np.isscalar(Ds):
-            self.tfac = 1
-        else:
-            if self.Ds.unit.is_equivalent(u.m):
-                self.tfac = self.Ds/const.c*(self.length_unit/u.rad)**2
-                self.tfac = self.tfac.to(u.d)
-            else:
-                print('Error: Ds units not recognized')
-                return
-
-        # structures for critical curves and caustics
-        self.crit = []
-        self.caus = []
-
-        # structures for grid
-        rlo = 1.0e-6
-        rhi = 2.5
-        n0 = 20
-        self.maingrid(-rhi,rhi,n0,-rhi,rhi,n0)
-        self.galgrid(rlo,rhi,n0,n0)
-
-        # various flags
-        self.griddone = False
-        self.critdone = False
+        self.tfac = self.calc_tfac(Ds)
 
         # group planes into slabs at the same distance;
         # note that we work with distances scaled by Ds;
@@ -559,34 +535,23 @@ class lensmodel:
         self.darr = darr
 
         # scaled version of the reference distance
-        if self.Dref<=0:
+        if Dref is None:
             # Dref is assumed to match Ds
-            dref_scaled = 1
-        elif np.isfinite(self.Dref):
-            dref_scaled = self.Dref/self.Ds
+            self.dref = 1
+        elif Dref<=0:
+            # Dref is again assumed to match Ds
+            self.dref = 1
+        elif np.isfinite(Dref):
+            self.dref = Dref/self.Ds
         else:
-            dref_scaled = np.inf
+            self.dref = np.inf
 
         # process multi_mode
         if len(multi_mode)==0:
-            # compute beta and tauhat factors;
-            # recall tauhat = tau*c/Ds where this Ds is comoving
-            # first append source distance to darr
-            darr = np.append(darr,1.0)
-            self.beta = np.zeros(self.nslab)
-            self.tauhat = np.zeros(self.nslab)
-            for j in range(self.nslab):
-                # Dls/Ds for reference distance; will be 1 for Dref=np.inf
-                Dfac = 1 - darr[j]/dref_scaled
-                self.beta[j] = (darr[j+1]-darr[j])/(darr[j+1]*Dfac)
-                self.tauhat[j] = darr[j]*darr[j+1]/((darr[j+1]-darr[j])*darr[-1])
-            # compute epsilon factors; here it helps to prepend darr with 0,
-            # but then we have to take care with the indexing
-            self.epsilon = np.zeros(self.nslab)
-            darr = np.insert(darr,0,0.0)
-            for j in range(1,self.nslab+1):
-                self.epsilon[j-1] = (darr[j-1]*(darr[j+1]-darr[j]))/(darr[j+1]*(darr[j]-darr[j-1]))
+            self.rescale_source = True
+            self.beta,self.epsilon,self.tauhat = self.calc_connections(Ds)
         elif len(multi_mode)==2:
+            self.rescale_source = False
             beta,epsilon = multi_mode
             if np.isscalar(beta):
                 self.beta = np.full(self.nslab,beta)
@@ -610,6 +575,21 @@ class lensmodel:
 
         # see if model is 3d
         self.flag3d = (self.nslab>=2)
+
+        # structures for critical curves and caustics
+        self.crit = []
+        self.caus = []
+
+        # structures for grid
+        rlo = 1.0e-6
+        rhi = 2.5
+        n0 = 20
+        self.maingrid(-rhi,rhi,n0,-rhi,rhi,n0)
+        self.galgrid(rlo,rhi,n0,n0)
+
+        # various flags
+        self.griddone = False
+        self.critdone = False
 
         # process pobs and pfix
         if self.flag3d==False:
@@ -638,6 +618,75 @@ class lensmodel:
         # note: 3d with position_mode=='fix' is handled in find_centers()
 
     ##################################################################
+    # internal: compute time delay factor
+    ##################################################################
+
+    def calc_tfac(self,Ds):
+        # factor for time delays
+        if np.isscalar(Ds):
+            tfac = 1
+            return tfac
+        else:
+            if Ds.unit.is_equivalent(u.m):
+                tfac = Ds/const.c*(self.length_unit/u.rad)**2
+                tfac = tfac.to(u.d)
+                return tfac
+            else:
+                print('Error: Ds units not recognized')
+                return None
+
+    ##################################################################
+    # internal: compute factors that connect planes - beta, epsilon, tauhat
+    # - recall tauhat = tau*c/Ds where this Ds is comoving
+    # - Dsnew must be a comoving distance in the same units used
+    #   to specify the original Ds for the model
+    # - Dsnew can be an array so different positions have different
+    #   distances
+    ##################################################################
+
+    def calc_connections(self,Dsnew):
+        if self.rescale_source==False:
+            print('Error: cannot rescale source when beta/epsilon were input')
+            return
+        # check whether there is anything to caculate
+        if (Dsnew is None):
+            return self.beta,self.epsilon,self.tauhat
+        # recall all distances are scaled by self.Ds
+        dsnew_scaled = Dsnew/self.Ds
+        if np.isscalar(dsnew_scaled):
+            if dsnew_scaled<=0:
+                return self.beta,self.epsilon,self.tauhat
+        # if we get to this point, we have valid distance(s);
+        # this is a hack to make sure darr has the right dimensions
+        darr = [ 0*dsnew_scaled + d for d in self.darr ]
+        # it helps to append source distance
+        darr.append(dsnew_scaled)
+        # loop over slabs for beta and tauhat
+        beta = []
+        tauhat = []
+        for j in range(self.nslab):
+            # Dls/Ds for reference distance; will be 1 if model
+            # is calibrated at infinity
+            dfac = 1 - darr[j]/self.dref
+            tmpbeta = (darr[j+1]-darr[j])/(darr[j+1]*dfac)
+            tmptauhat = darr[j]*darr[j+1]/((darr[j+1]-darr[j])*darr[-1])
+            beta.append(tmpbeta)
+            tauhat.append(tmptauhat)
+        # now do epsilon; here it helps to prepend darr with 0,
+        # but then we have to take care with the indexing
+        darr = [0*dsnew_scaled] + darr
+        epsilon = []
+        for j in range(1,self.nslab+1):
+            tmpepsilon = (darr[j-1]*(darr[j+1]-darr[j]))/(darr[j+1]*(darr[j]-darr[j-1]))
+            epsilon.append(tmpepsilon)
+        # want them as arrays
+        beta = np.array(beta)
+        epsilon = np.array(epsilon)
+        tauhat = np.array(tauhat)
+        # done
+        return beta,epsilon,tauhat
+
+    ##################################################################
     # report some key information about the model
     ##################################################################
 
@@ -657,16 +706,16 @@ class lensmodel:
     # lensing
     # - stopslab can be used to stop at some specified plane;
     #   stopslab<0 means go all the way to the source
-    # - if Dsrc is positive and finite, the source plane is set to
+    # - if Dsnew is positive and finite, the source plane is set to
     #   this distance and the model is rescaled accordingly
-    #   + Dsrc must be a comoving distance in the same units used
+    #   + Dsnew must be a comoving distance in the same units used
     #     to specify the original Ds for the model
-    #   + Dsrc can be an array so different positions have different
+    #   + Dsnew can be an array so different positions have different
     #     distances
     # - output3d==True means return all planes
     ##################################################################
 
-    def lenseqn(self,xarr,stopslab=-1,Dsrc=0,output3d=False):
+    def lenseqn(self,xarr,stopslab=-1,Dsnew=None,output3d=False):
         if stopslab<0: stopslab = len(self.slab_list)
         xarr = np.array(xarr)
         # need special treatment if xarr is a single point
@@ -686,10 +735,8 @@ class lensmodel:
         Gamm_all = np.zeros([self.nslab+1]+xshape+[2,2])
         GammAall = np.zeros([self.nslab+1]+xshape+[2,2])
 
-        # create local versions of beta and epsilon, which can be updated for Dsrc
-        beta    = np.array([ np.full(xshape,b) for b in self.beta ])
-        epsilon = np.array([ np.full(xshape,e) for e in self.epsilon ])
-        print('CRK check',self.nslab,beta.shape,epsilon.shape)
+        # create local versions of beta, epsilon, and tauhat
+        beta,epsilon,tauhat = self.calc_connections(Dsnew)
 
         # set of identity matrices for all positions
         tmp0 = np.zeros(xshape)
@@ -719,14 +766,14 @@ class lensmodel:
             Gamm_all[j] = Gamma_now
             GammAall[j] = Gamma_A_now
             # compute the lens equation
-            xall[j+1] = xall[j] - self.beta[j]*alphaall[j]
-            Aall[j+1] = Aall[j] - self.beta[j]*GammAall[j]
+            xall[j+1] = xall[j] - beta[j]*alphaall[j]
+            Aall[j+1] = Aall[j] - beta[j]*GammAall[j]
             if j>=1:
-                xall[j+1] += self.epsilon[j]*(xall[j]-xall[j-1])
-                Aall[j+1] += self.epsilon[j]*(Aall[j]-Aall[j-1])
+                xall[j+1] += epsilon[j]*(xall[j]-xall[j-1])
+                Aall[j+1] += epsilon[j]*(Aall[j]-Aall[j-1])
             # time delays
             tgeom = 0.5*np.linalg.norm(xall[j+1]-xall[j],axis=-1)**2
-            tall[j+1] = tall[j] + self.tauhat[j]*(tgeom-self.beta[j]*potall[j])
+            tall[j+1] = tall[j] + tauhat[j]*(tgeom-beta[j]*potall[j])
 
         if output3d==True:
             # return the desired plane
@@ -746,6 +793,7 @@ class lensmodel:
     # positions; position array can have arbitrary shape
     ##################################################################
 
+    # CRK HERE need to add Dsnew here and below
     def defmag(self,xarr,stopslab=-1):
         u,A,dt = self.lenseqn(xarr,stopslab=stopslab)
         alpha = xarr - u
@@ -1071,6 +1119,7 @@ class lensmodel:
             # add  to lists
             imgall.append(imgarr[indx])
             muall.append(muarr[indx])
+            # CRK HERE NEED TO UPDATE tfac for different source distances
             dtall.append(self.tfac*dt[indx])
 
         if oneflag:
