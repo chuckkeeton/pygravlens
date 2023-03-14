@@ -84,6 +84,9 @@ Process a distance or set of distances into a form that can be used by
 the rest of the code. Can take scalar or Quantity, and can handle a single
 distance or a list/array. If the distance is a Quantity, length_unit
 specifies the unit used for the output.
+
+Returns processed distance(s) and a flag indicating whether the distance
+is dimensional.
 """
 def Dprocess(Din,length_unit=u.Mpc):
     # this is a hack so we can handle either a single value or a list
@@ -100,7 +103,7 @@ def Dprocess(Din,length_unit=u.Mpc):
             oneflag = False
     else:
         print('Error: unknown type in Dprocess')
-        return None
+        return None,None
     # initialize
     Dout = []
     dimensionless_flag = True
@@ -125,12 +128,30 @@ def Dprocess(Din,length_unit=u.Mpc):
         Dout = Dout*length_unit
     elif dimensionless_flag is not True:
         print('Error: distance units are not consistent')
-        return None
+        return None,None
     # done
     if oneflag:
-        return Dout[0]
+        return Dout[0], not dimensionless_flag
     else:
-        return Dout
+        return Dout, not dimensionless_flag
+
+################################################################################
+"""
+Compute a ratio of two distances or sets of distances, allowing for the
+possibility that they are dimensional or dimensionless.
+"""
+def Dratio(numer,denom):
+    num_tmp,num_dim = Dprocess(numer)
+    den_tmp,den_dim = Dprocess(denom)
+    ratio = num_tmp/den_tmp
+    if num_dim or den_dim:
+        ratio = ratio.decompose()
+        if ratio.unit.is_equivalent(u.dimensionless_unscaled) is False:
+            print('Error: distance units are not consistent')
+            return None
+        ratio = ratio.value
+    return ratio
+
 
 ################################################################################
 # MASS MODELS
@@ -413,7 +434,7 @@ class lensplane:
         self.kappa = kappa
         self.gammac = gammac
         self.gammas = gammas
-        self.Dl = Dl
+        self.Dl,self.Dl_dim = Dprocess(Dl)
         # handle special case of kapmap
         if ID=='kapmap':
             self.init_kapmap(parr,map_scale,map_align,map_bound)
@@ -566,7 +587,7 @@ class lensmodel:
 
     def __init__(self,plane_list,xtol=1.0e-5,Ds=1,Dref=None,length_unit=u.arcsec,position_mode='obs',multi_mode=[],Ddecimals=3):
         self.xtol = xtol
-        self.Ds = Ds
+        self.Ds,self.Ds_dim = Dprocess(Ds)
         self.length_unit = length_unit
         self.position_mode = position_mode
 
@@ -574,9 +595,11 @@ class lensmodel:
         self.tfac = self.calc_tfac(Ds)
 
         # group planes into slabs at the same distance;
-        # note that we work with distances scaled by Ds;
+        # note that we work with distances scaled by Ds
+        dtmp = Dratio([ plane.Dl for plane in plane_list ], self.Ds)
+        # CRK HERE
+        #dtmp = np.array([ plane.Dl/self.Ds for plane in plane_list ])
         # recall that we round distances using Ddecimals
-        dtmp = np.array([ plane.Dl/self.Ds for plane in plane_list ])
         darr,iarr = np.unique(dtmp.round(Ddecimals),return_inverse=True)
         self.slab_list = []
         for i in range(len(darr)):
@@ -586,6 +609,7 @@ class lensmodel:
         self.nslab = len(self.slab_list)
         # store the scaled distances for the slabs
         self.darr = darr
+        print('CRK HERE darr',self.darr)
 
         # scaled version of the reference distance
         if Dref is None:
@@ -595,9 +619,10 @@ class lensmodel:
             # Dref is again assumed to match Ds
             self.dref = 1
         elif np.isfinite(Dref):
-            self.dref = Dref/self.Ds
+            self.dref = Dratio(Dref,Ds)
         else:
             self.dref = np.inf
+        print('CRK HERE dref',self.dref)
 
         # process multi_mode
         if len(multi_mode)==0:
@@ -675,13 +700,15 @@ class lensmodel:
     ##################################################################
 
     def calc_tfac(self,Ds):
-        # factor for time delays
-        if np.isscalar(Ds):
-            tfac = 1
+        Ds_proc,Ds_dim = Dprocess(Ds)
+        if Ds_dim is False:
+            # we have dimensionless distance(s), so set tfac=1;
+            # this is a hack to make sure tfac aligns with Ds
+            tfac = 0*Ds_proc + 1
             return tfac
         else:
-            if Ds.unit.is_equivalent(u.m):
-                tfac = Ds/const.c*(self.length_unit/u.rad)**2
+            if Ds_proc.unit.is_equivalent(u.m):
+                tfac = Ds_proc/const.c*(self.length_unit/u.rad)**2
                 tfac = tfac.to(u.d)
                 return tfac
             else:
@@ -705,7 +732,7 @@ class lensmodel:
         if (Dsnew is None):
             return self.beta,self.epsilon,self.tauhat
         # recall all distances are scaled by self.Ds
-        dsnew_scaled = Dsnew/self.Ds
+        dsnew_scaled = Dratio(Dsnew,self.Ds)
         if np.isscalar(dsnew_scaled):
             if dsnew_scaled<=0:
                 return self.beta,self.epsilon,self.tauhat
@@ -1150,7 +1177,7 @@ class lensmodel:
         else:
             Dsarr = Dsnew
             tfac = self.calc_tfac(Dsnew)
-            if len(np.array(Dsnew).shape)==0:
+            if len(np.array(tfac).shape)==0:
                 # Dsnew is a scalar; this is a hack to create lists
                 # with the right length
                 Dsarr = [ 0*u[0]+Dsnew for u in srcarr ]
