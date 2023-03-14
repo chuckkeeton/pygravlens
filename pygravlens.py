@@ -78,6 +78,59 @@ def beta2d(beta,di):
     dj = di/(1.0-beta+beta*di)
     return dj
 
+################################################################################
+"""
+Process a distance or set of distances into a form that can be used by
+the rest of the code. Can take scalar or Quantity, and can handle a single
+distance or a list/array. If the distance is a Quantity, length_unit
+specifies the unit used for the output.
+"""
+def Dprocess(Din,length_unit=u.Mpc):
+    # this is a hack so we can handle either a single value or a list
+    if np.isscalar(Din):
+        oneflag = True
+        Din = [Din]
+    elif isinstance(Din,list):
+        oneflag = False
+    elif isinstance(Din,np.ndarray):
+        if len(Din.shape)==0:
+            oneflag = True
+            Din = [Din]
+        else:
+            oneflag = False
+    else:
+        print('Error: unknown type in Dprocess')
+        return None
+    # initialize
+    Dout = []
+    dimensionless_flag = True
+    length_flag = True
+    # loop over values
+    for Dtmp in Din:
+        Dtmp = Dtmp*u.m/u.m
+        if Dtmp.unit.is_equivalent(u.dimensionless_unscaled):
+            dimensionless_flag = dimensionless_flag and True
+            length_flag = False
+            Dout.append(Dtmp.decompose())
+        elif Dtmp.unit.is_equivalent(length_unit):
+            length_flag = length_flag and True
+            dimensionless_flag = False
+            Dout.append(Dtmp.to(length_unit).value)
+        else:
+            print('Error: distance units not recognized')
+            return None
+    # process into final form
+    Dout = np.array(Dout)
+    if length_flag:
+        Dout = Dout*length_unit
+    elif dimensionless_flag is not True:
+        print('Error: distance units are not consistent')
+        return None
+    # done
+    if oneflag:
+        return Dout[0]
+    else:
+        return Dout
 
 ################################################################################
 # MASS MODELS
