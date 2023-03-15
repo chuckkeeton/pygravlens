@@ -152,6 +152,24 @@ def Dratio(numer,denom):
         ratio = ratio.value
     return ratio
 
+################################################################################
+"""
+Function to write images produced by findimg().
+"""
+def writeimg(imgdat,label=''):
+    if len(label)>0: print(label)
+    x,mu,t = imgdat
+    if np.array(x).ndim==2:
+        # one set of images
+        for iimg in range(len(x)):
+            print(f'{x[iimg,0]:9.6f} {x[iimg,1]:9.6f} {mu[iimg]:9.6f} {t[iimg]:9.6f}')
+    else:
+        # multiple sets of images
+        for isrc in range(len(x)):
+            print('source',isrc)
+            for iimg in range(len(x[isrc])):
+                print(f'{x[isrc][iimg,0]:9.6f} {x[isrc][iimg,1]:9.6f} {mu[isrc][iimg]:9.6f} {t[isrc][iimg]:9.6f}')
+
 
 ################################################################################
 # MASS MODELS
@@ -597,8 +615,6 @@ class lensmodel:
         # group planes into slabs at the same distance;
         # note that we work with distances scaled by Ds
         dtmp = Dratio([ plane.Dl for plane in plane_list ], self.Ds)
-        # CRK HERE
-        #dtmp = np.array([ plane.Dl/self.Ds for plane in plane_list ])
         # recall that we round distances using Ddecimals
         darr,iarr = np.unique(dtmp.round(Ddecimals),return_inverse=True)
         self.slab_list = []
@@ -609,7 +625,6 @@ class lensmodel:
         self.nslab = len(self.slab_list)
         # store the scaled distances for the slabs
         self.darr = darr
-        print('CRK HERE darr',self.darr)
 
         # scaled version of the reference distance
         if Dref is None:
@@ -622,7 +637,6 @@ class lensmodel:
             self.dref = Dratio(Dref,Ds)
         else:
             self.dref = np.inf
-        print('CRK HERE dref',self.dref)
 
         # process multi_mode
         if len(multi_mode)==0:
@@ -1182,8 +1196,6 @@ class lensmodel:
                 # with the right length
                 Dsarr = [ 0*u[0]+Dsnew for u in srcarr ]
                 tfac = [ 0*u[0]+tfac for u in srcarr ]
-        print('CRK HERE Dsarr',Dsarr)
-        print('CRK HERE tfac',tfac)
 
         # loop over sources
         imgall = []
@@ -1217,9 +1229,6 @@ class lensmodel:
             imgall.append(imgarr[indx])
             muall.append(muarr[indx])
             # note: make sure to use correct tfac for this source
-            print('CRK check tdel')
-            print(tfac[iu])
-            print(dt[indx])
             dtall.append(tfac[iu]*dt[indx])
 
         if oneflag:
@@ -1256,11 +1265,15 @@ class lensmodel:
         else:
             oneflag = False
 
+        # CRK HERE
+        if Dsnew is not None:
+            print('NOTE: need to handle Dsnew in findsrc()')
+            return
+
         # loop over sources
         imgall = []
         muall = []
         for x in xarr:
-            # CRK HERE NEED TO HANDLE Dsnew
             u,A,dt = self.lenseqn(x,plane)
             imgarr,muarr,dtarr = self.findimg(u,plane)
             imgall.append(imgarr)
@@ -1280,13 +1293,18 @@ class lensmodel:
     # - srcmap,imgmap
     ##################################################################
 
-    def extendedimg(self,srcmode='',srcarr=[],extent=[]):
+    def extendedimg(self,srcmode='',srcarr=[],extent=[],Dsnew=None):
         if len(srcmode)==0:
             print('Error in extendedimg(): srcmode is not specified')
         if len(srcarr)==0:
             print('Error in extendedimg(): srcarr is empty')
         if len(extent)==0:
             print('Error in extendedimg(): extent is empty')
+
+        # CRK HERE
+        if Dsnew is not None:
+            print('NOTE: need to handle Dsnew in extendedimg()')
+            return
 
         # want srcarr to be 2d in general
         srcarr = np.array(srcarr)
@@ -1328,7 +1346,7 @@ class lensmodel:
     # while steps gives the number of pixels in each direction
     ##################################################################
 
-    def plotmag(self,steps=500,signed=True,mumin=-5,mumax=5,title='',file=''):
+    def plotmag(self,steps=500,Dsnew=None,signed=True,mumin=-5,mumax=5,title='',file=''):
         # set up the grid
         xlo,xhi,nx = self.maingrid_info[0]
         ylo,yhi,ny = self.maingrid_info[1]
@@ -1336,7 +1354,7 @@ class lensmodel:
         ytmp = np.linspace(ylo,yhi,steps)
         xarr = mygrid(xtmp,ytmp)
         # compute magnifications
-        u,A,dt = self.lenseqn(xarr)
+        u,A,dt = self.lenseqn(xarr,Dsnew=Dsnew)
         mu = 1.0/np.linalg.det(A)
         if signed==False:
             mu = np.absolute(mu)
@@ -1367,8 +1385,13 @@ class lensmodel:
     # using root finding
     ##################################################################
 
-    def plotcrit(self,mode='grid',steps=500,pointtype='line',show=True,title='',file=''):
+    def plotcrit(self,Dsnew=None,mode='grid',steps=500,pointtype='line',show=True,title='',file=''):
         self.critdone = False
+
+        # CRK HERE
+        if Dsnew is not None:
+            print('NOTE: need to handle Dsnew in plotcrit()')
+            return
 
         if mode=='grid':
 
@@ -1549,6 +1572,7 @@ class lensmodel:
     # compute deflection statistics for a set of points; specifically,
     # move the points randomly and report mean and covariance matrix
     # - xarr: set of points where deflections are computed
+    # - Dsnew: source distance(s) for the points
     # - extent=[xlo,xhi,ylo,yhi]: range spanned by shifted positions
     # - Nsamp: number of random samples to use
     # - rotate: whether to apply random rotations
@@ -1560,7 +1584,7 @@ class lensmodel:
     # - mean vector, covariance matrix, and optional full set of samples
     ##################################################################
 
-    def DefStats(self,xarr,extent=[],Nsamp=1000,rotate=True,refimg=0,
+    def DefStats(self,xarr,Dsnew=None,extent=[],Nsamp=1000,rotate=True,refimg=0,
                  fullout=False,fitshear=False):
 
         if len(extent)==0:
@@ -1593,7 +1617,7 @@ class lensmodel:
             # transformed points
             xsamp = xshift@rot.T + xoff
             # compute deflections
-            defarr,Aarr = self.defmag(xsamp)
+            defarr,Aarr = self.defmag(xsamp,Dsnew=Dsnew)
             # see if we are computing differential deflections
             if refimg is None:
                 ddefarr = defarr + 0
@@ -1613,6 +1637,7 @@ class lensmodel:
                 ayi = defarr[:,1] - defarr[refimg,1]
                 # set up the matrix and vector needed to solve for
                 # kappa, gammac, gammas
+                print('CRK HERE: DefStats shear analysis needs to be updated to handle Dsnew')
                 lhs = np.zeros((3,3))
                 rhs = np.zeros(3)
                 lhs[0,0] = np.sum(xi*xi+yi*yi)
