@@ -1572,6 +1572,7 @@ class lensmodel:
     # compute deflection statistics for a set of points; specifically,
     # move the points randomly and report mean and covariance matrix
     # - xarr: set of points where deflections are computed
+    # - Dl: distance to lens - used only for fitshear analysis
     # - Dsnew: source distance(s) for the points
     # - extent=[xlo,xhi,ylo,yhi]: range spanned by shifted positions
     # - Nsamp: number of random samples to use
@@ -1580,15 +1581,17 @@ class lensmodel:
     #     to the specified image; if None, use full deflections
     # - fullout: whether to return all of the samples as well as the
     #     summary statistics
+    # - fitshear: whether to fit and remove contributions that can
+    #     be explained in terms of convergence and shear
     # Output:
     # - mean vector, covariance matrix, and optional full set of samples
     ##################################################################
 
-    def DefStats(self,xarr,Dsnew=None,extent=[],Nsamp=1000,rotate=True,refimg=0,
+    def DefStats(self,xarr,Dl=None,Dsnew=None,extent=[],Nsamp=1000,rotate=True,refimg=0,
                  fullout=False,fitshear=False):
 
         if len(extent)==0:
-            print('Error: extent must be specified')
+            print('Error: in DefStats(), extent must be specified')
             return
         xlo,xhi,ylo,yhi = extent
 
@@ -1598,6 +1601,26 @@ class lensmodel:
         xshift = xarr-xbar
         # find maximum distance from center of box
         rmax = np.sort(np.linalg.norm(xshift,axis=1))[-1]
+
+        # if fitting convergence/shear, we may need Dls/Ds factors
+        dls_ds = 1
+        if Dsnew is not None:
+            if Dl is not None:
+                dls_ds = 1 - Dratio(Dl,Dsnew)
+            elif self.nslab==1:
+                dls_ds = 1 - Dratio(self.plane_list[0].Dl,Dsnew)
+            else:
+                print('Error: in DefStats(), fitshear analysis requires a unique lens distance')
+                return
+        # make sure dls_ds is array that aligns with xarr
+        if len(np.array(dls_ds).shape)==0:
+            # we have a scalar value, so extend it to array
+            dls_ds = np.full(len(xarr),dls_ds)
+        elif len(dls_ds)!=len(xarr):
+            print('Error: in DefStats(), Dsnew does not align with xarr')
+            return
+        # CRK HERE
+        print('CRK dls_ds',dls_ds)
 
         # generate the samples
         xsamp_all = []
@@ -1631,13 +1654,12 @@ class lensmodel:
                     print('Error: DefStats cannot do shear analysis without a reference image')
                     return
                 # differential positions and deflections
-                xi = xsamp[:,0] - xsamp[refimg,0]
-                yi = xsamp[:,1] - xsamp[refimg,1]
+                xi = dls_ds*xsamp[:,0] - dls_ds[refimg]*xsamp[refimg,0]
+                yi = dls_ds*xsamp[:,1] - dls_ds[refimg]*xsamp[refimg,1]
                 axi = defarr[:,0] - defarr[refimg,0]
                 ayi = defarr[:,1] - defarr[refimg,1]
                 # set up the matrix and vector needed to solve for
                 # kappa, gammac, gammas
-                print('CRK HERE: DefStats shear analysis needs to be updated to handle Dsnew')
                 lhs = np.zeros((3,3))
                 rhs = np.zeros(3)
                 lhs[0,0] = np.sum(xi*xi+yi*yi)
