@@ -1664,8 +1664,6 @@ class lensmodel:
         elif len(dls_ds)!=len(xarr):
             print('Error: in DefStats(), Dsnew does not align with xarr')
             return
-        # CRK HERE
-        print('CRK dls_ds',dls_ds)
 
         # generate the samples
         xsamp_all = []
@@ -1728,7 +1726,7 @@ class lensmodel:
                 Gammat = np.array([[ans[0]+ans[1],ans[2]],[ans[2],ans[0]-ans[1]]])
                 # compute the remaining deflections after accounting
                 # for convergence and shear
-                ddefarr = ddefarr - (xsamp-xsamp[refimg])@Gammat.T
+                ddefarr = ddefarr - np.column_stack((xi,yi))@Gammat.T
             # append to samples lists
             xsamp_all.append(xsamp)
             defsamp_all.append(ddefarr.flatten())
