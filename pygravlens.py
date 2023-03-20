@@ -80,6 +80,26 @@ def beta2d(beta,di):
 
 ################################################################################
 """
+Take a nested list l and return a flattened version, along with the original shape.
+Works recursively. Original shape makes sense only if original list is rectangular.
+Modified from http://rightfootin.blogspot.com/2006/09/more-on-python-flatten.html
+"""
+def list_flatten(l):
+    newlist = []
+    oldshape = [len(l)]
+    tmpshape = []
+    for item in l:
+        if isinstance(item, (list, tuple)):
+            tmplist,tmpshape = list_flatten(item)
+            newlist.extend(tmplist)
+        else:
+            newlist.append(item)
+    if len(tmpshape)>0:
+        oldshape.extend(tmpshape)
+    return newlist,oldshape
+
+################################################################################
+"""
 Process a distance or set of distances into a form that can be used by
 the rest of the code. Can take scalar or Quantity, and can handle a single
 distance or a list/array. If the distance is a Quantity, length_unit
@@ -92,15 +112,18 @@ def Dprocess(Din,length_unit=u.Mpc):
     # this is a hack so we can handle either a single value or a list
     if np.isscalar(Din):
         oneflag = True
-        Din = [Din]
+        Din2 = [Din]
     elif isinstance(Din,list):
         oneflag = False
+        Din2,Dshape = list_flatten(Din)
     elif isinstance(Din,np.ndarray):
         if len(Din.shape)==0:
             oneflag = True
-            Din = [Din]
+            Din2 = [Din]
         else:
             oneflag = False
+            Dshape = Din.shape
+            Din2 = Din.flatten()
     else:
         print('Error: unknown type in Dprocess')
         return None,None
@@ -109,7 +132,7 @@ def Dprocess(Din,length_unit=u.Mpc):
     dimensionless_flag = True
     length_flag = True
     # loop over values
-    for Dtmp in Din:
+    for Dtmp in Din2:
         Dtmp = Dtmp*u.m/u.m
         if Dtmp.unit.is_equivalent(u.dimensionless_unscaled):
             dimensionless_flag = dimensionless_flag and True
@@ -133,7 +156,7 @@ def Dprocess(Din,length_unit=u.Mpc):
     if oneflag:
         return Dout[0], not dimensionless_flag
     else:
-        return Dout, not dimensionless_flag
+        return np.reshape(Dout,Dshape), not dimensionless_flag
 
 ################################################################################
 """
@@ -603,7 +626,7 @@ class lensmodel:
     # - Ddecimals is the number of decimals to use when rounding distances
     ##################################################################
 
-    def __init__(self,plane_list,xtol=1.0e-5,Ds=1,Dref=None,length_unit=u.arcsec,position_mode='obs',multi_mode=[],Ddecimals=3):
+    def __init__(self,plane_list,xtol=1.0e-5,Ds=1,Dref=None,length_unit=u.arcsec,position_mode='obs',multi_mode=[],Ddecimals=4):
         self.xtol = xtol
         self.Ds,self.Ds_dim = Dprocess(Ds)
         self.length_unit = length_unit
@@ -831,6 +854,20 @@ class lensmodel:
 
         # create local versions of beta, epsilon, and tauhat
         beta,epsilon,tauhat = self.calc_connections(Dsnew)
+        if beta.ndim==1:
+            # all positions have the same source distance, hence same beta/epsilon;
+            # this is just for convenience later
+            beta1 = beta
+            beta2 = beta
+            epsilon1 = epsilon
+            epsilon2 = epsilon
+        else:
+            # different positions have different source distances, so beta and epsilon
+            # are arrays in each plane and we have to take care with indexing
+            beta1 = np.expand_dims(beta ,axis=-1)
+            beta2 = np.expand_dims(beta1,axis=-1)
+            epsilon1 = np.expand_dims(epsilon ,axis=-1)
+            epsilon2 = np.expand_dims(epsilon1,axis=-1)
 
         # set of identity matrices for all positions
         tmp0 = np.zeros(xshape)
@@ -860,17 +897,17 @@ class lensmodel:
             Gamm_all[j] = Gamma_now
             GammAall[j] = Gamma_A_now
             # compute the lens equation
-            xall[j+1] = xall[j] - beta[j]*alphaall[j]
-            Aall[j+1] = Aall[j] - beta[j]*GammAall[j]
+            xall[j+1] = xall[j] - beta1[j]*alphaall[j]
+            Aall[j+1] = Aall[j] - beta2[j]*GammAall[j]
             if j>=1:
-                xall[j+1] += epsilon[j]*(xall[j]-xall[j-1])
-                Aall[j+1] += epsilon[j]*(Aall[j]-Aall[j-1])
+                xall[j+1] += epsilon1[j]*(xall[j]-xall[j-1])
+                Aall[j+1] += epsilon2[j]*(Aall[j]-Aall[j-1])
             # time delays
             tgeom = 0.5*np.linalg.norm(xall[j+1]-xall[j],axis=-1)**2
             tall[j+1] = tall[j] + tauhat[j]*(tgeom-beta[j]*potall[j])
 
         if output3d==True:
-            # return the desired plane
+            # return all planes
             if oneflag:
                 return xall[:][0],Aall[:][0],tall[:][0]
             else:
@@ -1174,14 +1211,17 @@ class lensmodel:
     def findimg(self,u,plane=-1,Dsnew=None):
         if self.griddone==False:
             print('Error: tiling has not been completed')
-            return [],[]
+            return [],[],[]
 
         srcarr = np.array(u)
         if srcarr.ndim==1:
-            srcarr = np.array([u])
             oneflag = True
-        else:
+            srcarr = np.array([u])
+        elif srcarr.ndim==2:
             oneflag = False
+        else:
+            print('Error: findimg can handle a single source or list of sources, not a grid')
+            return [],[],[]
 
         # local version of distance stuff; we want Dsarr and tfac
         # to be lists aligned with the sources
@@ -1572,7 +1612,9 @@ class lensmodel:
     # compute deflection statistics for a set of points; specifically,
     # move the points randomly and report mean and covariance matrix
     # - xarr: set of points where deflections are computed
-    # - Dl: distance to lens - used only for fitshear analysis
+    # - Dlnew: distance to lens - used only for fitshear analysis;
+    #     if not specified, and model has a single plane, that plane
+    #     is used for Dl
     # - Dsnew: source distance(s) for the points
     # - extent=[xlo,xhi,ylo,yhi]: range spanned by shifted positions
     # - Nsamp: number of random samples to use
@@ -1587,7 +1629,7 @@ class lensmodel:
     # - mean vector, covariance matrix, and optional full set of samples
     ##################################################################
 
-    def DefStats(self,xarr,Dl=None,Dsnew=None,extent=[],Nsamp=1000,rotate=True,refimg=0,
+    def DefStats(self,xarr,Dlnew=None,Dsnew=None,extent=[],Nsamp=1000,rotate=True,refimg=0,
                  fullout=False,fitshear=False):
 
         if len(extent)==0:
@@ -1603,15 +1645,18 @@ class lensmodel:
         rmax = np.sort(np.linalg.norm(xshift,axis=1))[-1]
 
         # if fitting convergence/shear, we may need Dls/Ds factors
-        dls_ds = 1
+        if Dlnew is not None:
+            Dltmp = Dlnew
+        elif self.nslab==1:
+            Dltmp = self.slab_list[0][0].Dl
+        else:
+            print('Error: in DefStats(), fitshear analysis requires a unique lens distance')
+            return
         if Dsnew is not None:
-            if Dl is not None:
-                dls_ds = 1 - Dratio(Dl,Dsnew)
-            elif self.nslab==1:
-                dls_ds = 1 - Dratio(self.plane_list[0].Dl,Dsnew)
-            else:
-                print('Error: in DefStats(), fitshear analysis requires a unique lens distance')
-                return
+            Dstmp = Dsnew
+        else:
+            Dstmp = self.Ds
+        dls_ds = 1.0 - Dratio(Dltmp,Dstmp)
         # make sure dls_ds is array that aligns with xarr
         if len(np.array(dls_ds).shape)==0:
             # we have a scalar value, so extend it to array
@@ -1653,7 +1698,9 @@ class lensmodel:
                 if refimg is None:
                     print('Error: DefStats cannot do shear analysis without a reference image')
                     return
-                # differential positions and deflections
+                # differential positions and deflections;
+                # note that we include dls_ds factor multiplying positions to get
+                # the desired scaling
                 xi = dls_ds*xsamp[:,0] - dls_ds[refimg]*xsamp[refimg,0]
                 yi = dls_ds*xsamp[:,1] - dls_ds[refimg]*xsamp[refimg,1]
                 axi = defarr[:,0] - defarr[refimg,0]
