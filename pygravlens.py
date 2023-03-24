@@ -462,9 +462,9 @@ class lensplane:
     # NOTE: to work with a kappa map, use:
     # - ID = 'kapmap'
     # - parr = basename as used in kappa2lens
-    # - map_scale = arcseconds per pixel [default=1]
     # - map_align = 'center' [default] or 'corner'
     # - map_bound = 'extrapolate' or 'clip' or 'periodic'
+    # NOTE: map_scale is deprecated
     ##################################################################
 
     def __init__(self,ID,parr=[],kappa=0,gammac=0,gammas=0,Dl=0.5,
@@ -478,7 +478,7 @@ class lensplane:
         self.Dl,self.Dl_dim = Dprocess(Dl)
         # handle special case of kapmap
         if ID=='kapmap':
-            self.init_kapmap(parr,map_scale,map_align,map_bound)
+            self.init_kapmap(parr,map_align,map_bound)
         else:
             self.parr = np.array(parr)
             # parr should be list of lists; this handles single-component case
@@ -488,7 +488,7 @@ class lensplane:
     # stuff to process a kapmap model
     ##################################################################
 
-    def init_kapmap(self,basename,map_scale,map_align,map_bound):
+    def init_kapmap(self,basename,map_align,map_bound):
         with open(basename+'.pkl','rb') as f:
             all_arr = pickle.load(f)
         x_arr = all_arr[0]
@@ -498,8 +498,8 @@ class lensplane:
             y_off = 0.5*(y_arr[0]+y_arr[-1])
             x_arr = x_arr - x_off
             y_arr = y_arr - y_off
-        x_arr = x_arr*map_scale
-        y_arr = y_arr*map_scale
+        x_arr = x_arr
+        y_arr = y_arr
         # code expects first two parameters to be position
         ptmp = [0, 0]
         for i in range(2,8):
@@ -1753,7 +1753,7 @@ class lensmodel:
 This code is adapted from Meneghetti, "Introduction to Gravitational Lensing:
 With Python Examples" (Lecture Notes in Physics, 2021).
 
-x_arr,y_arr represent the arrays used to construct the grid - must be 1d
+x_arr,y_arr represent the arrays used to construct the grid - must be 1d and in arcsec
 kappa_arr has the convergence on the grid
 """
 
