@@ -854,6 +854,7 @@ class lensmodel:
 
         # create local versions of beta, epsilon, and tauhat
         beta,epsilon,tauhat = self.calc_connections(Dsnew)
+        # print('CRK lenseqn:',beta)
         if beta.ndim==1:
             # all positions have the same source distance, hence same beta/epsilon;
             # this is just for convenience later
@@ -1664,6 +1665,7 @@ class lensmodel:
         elif len(dls_ds)!=len(xarr):
             print('Error: in DefStats(), Dsnew does not align with xarr')
             return
+        # print('CRK DefStats:',dls_ds)
 
         # generate the samples
         xsamp_all = []
@@ -1684,49 +1686,28 @@ class lensmodel:
             xsamp = xshift@rot.T + xoff
             # compute deflections
             defarr,Aarr = self.defmag(xsamp,Dsnew=Dsnew)
+            # if desired, fit and remove a convergence/shear model to the
+            # deflections; the remaining deflections represent contributions
+            # beyond convergence and shear
+            if fitshear:
+                # note that we include dls_ds factor multiplying positions to get the necessary scaling
+                xhat = dls_ds*xsamp[:,0]
+                yhat = dls_ds*xsamp[:,1]
+                # set up the arrays we need
+                M = np.array([[xhat,xhat,yhat,dls_ds,0*dls_ds],[yhat,-yhat,xhat,0*dls_ds,dls_ds]])
+                lhs = np.einsum('ijk,kli',M.T,M)
+                rhs = np.einsum('ijk,ik',M.T,defarr)
+                # solve
+                ans = np.linalg.solve(lhs,rhs)
+                kapgam_all.append(ans)
+                # compute residual deflections
+                alphamod = np.einsum('ijk,j',M.T,ans)
+                defarr = defarr - alphamod
             # see if we are computing differential deflections
             if refimg is None:
                 ddefarr = defarr + 0
             else:
                 ddefarr = defarr - defarr[refimg]
-            # if desired, fit and remove a convergence/shear model to the
-            # deflections; the remaining deflections represent contributions
-            # beyond convergence and shear
-            if fitshear:
-                if refimg is None:
-                    print('Error: DefStats cannot do shear analysis without a reference image')
-                    return
-                # differential positions and deflections;
-                # note that we include dls_ds factor multiplying positions to get
-                # the desired scaling
-                xi = dls_ds*xsamp[:,0] - dls_ds[refimg]*xsamp[refimg,0]
-                yi = dls_ds*xsamp[:,1] - dls_ds[refimg]*xsamp[refimg,1]
-                axi = defarr[:,0] - defarr[refimg,0]
-                ayi = defarr[:,1] - defarr[refimg,1]
-                # set up the matrix and vector needed to solve for
-                # kappa, gammac, gammas
-                lhs = np.zeros((3,3))
-                rhs = np.zeros(3)
-                lhs[0,0] = np.sum(xi*xi+yi*yi)
-                lhs[0,1] = np.sum(xi*xi-yi*yi)
-                lhs[0,2] = np.sum(2*xi*yi)
-                rhs[0] = np.sum(xi*axi+yi*ayi)
-                lhs[1,0] = np.sum(xi*xi-yi*yi)
-                lhs[1,1] = np.sum(xi*xi+yi*yi)
-                lhs[1,2] = np.sum(0*xi*yi)
-                rhs[1] = np.sum(xi*axi-yi*ayi)
-                lhs[2,0] = np.sum(2*xi*yi)
-                lhs[2,1] = np.sum(0*xi*yi)
-                lhs[2,2] = np.sum(xi*xi+yi*yi)
-                rhs[2] = np.sum(yi*axi+xi*ayi)
-                # solve
-                ans = np.linalg.solve(lhs,rhs)
-                kapgam_all.append(ans)
-                # set up the Gamma matrix
-                Gammat = np.array([[ans[0]+ans[1],ans[2]],[ans[2],ans[0]-ans[1]]])
-                # compute the remaining deflections after accounting
-                # for convergence and shear
-                ddefarr = ddefarr - np.column_stack((xi,yi))@Gammat.T
             # append to samples lists
             xsamp_all.append(xsamp)
             defsamp_all.append(ddefarr.flatten())
