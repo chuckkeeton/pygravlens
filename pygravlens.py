@@ -29,6 +29,15 @@ Pauli_s3 = np.array([[1,0],[0,-1]])
 
 ################################################################################
 """
+Function that returns 1/x when x!=0, and 0 when x==0.
+Strictly speaking, the return is not exactly 1/x but rather (1/x)*(1-s^2/x^2+...)
+so the approximation is good.
+"""
+def myinverse(x,s=1.0e-6):
+    return x/(s**2+x**2)
+
+################################################################################
+"""
 Generate a 2d grid given a pair of 1d arrays of points in x and y.
 The output is structured as follows:
 [
@@ -774,8 +783,10 @@ class lensmodel:
             if dsnew_scaled<=0:
                 return self.beta,self.epsilon,self.tauhat
         # if we get to this point, we have valid distance(s);
-        # this is a hack to make sure darr has the right dimensions
-        darr = [ 0*dsnew_scaled + d for d in self.darr ]
+        # this is a hack to make sure darr has the right dimensions;
+        # also, for any plane behind the source we use the source
+        # distance instead
+        darr = [ np.minimum(dsnew_scaled,d) for d in self.darr ]
         # it helps to append source distance
         darr.append(dsnew_scaled)
         # loop over slabs for beta and tauhat
@@ -786,7 +797,9 @@ class lensmodel:
             # is calibrated at infinity
             dfac = 1 - darr[j]/self.dref
             tmpbeta = (darr[j+1]-darr[j])/(darr[j+1]*dfac)
-            tmptauhat = darr[j]*darr[j+1]/((darr[j+1]-darr[j])*darr[-1])
+            # note: this is set so tmptauhat=0 if the planes match
+            tmptauhat = darr[j]*darr[j+1]/darr[-1]*myinverse(darr[j+1]-darr[j],s=1.0e-6)
+            # store
             beta.append(tmpbeta)
             tauhat.append(tmptauhat)
         # now do epsilon; here it helps to prepend darr with 0,
@@ -794,7 +807,9 @@ class lensmodel:
         darr = [0*dsnew_scaled] + darr
         epsilon = []
         for j in range(1,self.nslab+1):
-            tmpepsilon = (darr[j-1]*(darr[j+1]-darr[j]))/(darr[j+1]*(darr[j]-darr[j-1]))
+            # note: this is set so tmpepsilon=0 if the planes match
+            tmpepsilon = (darr[j-1]*(darr[j+1]-darr[j]))/darr[j+1]*myinverse(darr[j]-darr[j-1],s=1.0e-6)
+            # store
             epsilon.append(tmpepsilon)
         # want them as arrays
         beta = np.array(beta)
@@ -854,7 +869,6 @@ class lensmodel:
 
         # create local versions of beta, epsilon, and tauhat
         beta,epsilon,tauhat = self.calc_connections(Dsnew)
-        # print('CRK lenseqn:',beta)
         if beta.ndim==1:
             # all positions have the same source distance, hence same beta/epsilon;
             # this is just for convenience later
@@ -975,7 +989,10 @@ class lensmodel:
         self.maingrid_info = [[xlo,xhi,nx],[ylo,yhi,ny]]
 
     def galgrid(self,rlo,rhi,nr,ntheta):
-        self.galgrid_info = [rlo,rhi,nr,ntheta]
+        if nr==0 or ntheta==0:
+            self.galgrid_info = []
+        else:
+            self.galgrid_info = [rlo,rhi,nr,ntheta]
 
     ##################################################################
     # compute the tiling; this is a wrapper meant to be called by user
@@ -1033,6 +1050,7 @@ class lensmodel:
                                 for p in plane.pfix: centers.append(p)
                             else:
                                 # we need to tile with what we have so far
+                                self.centers = np.array(centers)
                                 self.do_tile(stopslab=j)
                                 # solve (intermediate) lens equation to find
                                 # observed position(s) of center(s)
@@ -1051,6 +1069,7 @@ class lensmodel:
     def do_tile(self,stopslab=-1,addlevels=2,addpoints=5,holes=0):
 
         # construct maingrid
+        self.maingrid_pts = []
         if len(self.maingrid_info)>0:
             xlo,xhi,nx = self.maingrid_info[0]
             ylo,yhi,ny = self.maingrid_info[1]
@@ -1059,6 +1078,7 @@ class lensmodel:
             self.maingrid_pts = np.reshape(mygrid(xtmp,ytmp),(-1,2))
 
         # construct galgrid
+        self.galgrid_pts = []
         if len(self.galgrid_info)>0:
             rlo,rhi,nr,ntheta = self.galgrid_info
             if nr>0:
@@ -1621,13 +1641,17 @@ class lensmodel:
     # - Nsamp: number of random samples to use
     # - rotate: whether to apply random rotations
     # - refimg: if given, compute differential deflections relative
-    #     to the specified image; if None, use full deflections
+    #     to the specified image; if None, use full deflections;
+    #     NOTE: if refimg is used, the corresponding entries from the
+    #     mean vector and covariance matrix are omitted (since they would
+    #     be identically 0)
     # - fullout: whether to return all of the samples as well as the
     #     summary statistics
     # - fitshear: whether to fit and remove contributions that can
     #     be explained in terms of convergence and shear
     # Output:
-    # - mean vector, covariance matrix, and optional full set of samples
+    # - mean vector, covariance matrix, optional full set of samples,
+    #     optional kappa/gamma values
     ##################################################################
 
     def DefStats(self,xarr,Dlnew=None,Dsnew=None,extent=[],Nsamp=1000,rotate=True,refimg=0,
@@ -1665,7 +1689,6 @@ class lensmodel:
         elif len(dls_ds)!=len(xarr):
             print('Error: in DefStats(), Dsnew does not align with xarr')
             return
-        # print('CRK DefStats:',dls_ds)
 
         # generate the samples
         xsamp_all = []
@@ -1685,8 +1708,9 @@ class lensmodel:
             # transformed points
             xsamp = xshift@rot.T + xoff
             # compute deflections
-            defarr,Aarr = self.defmag(xsamp,Dsnew=Dsnew)
-            # if desired, fit and remove a convergence/shear model to the
+            deflos,Alos = self.defmag(xsamp,Dsnew=Dstmp)  # 'los' uses actual Ds
+            deffg ,Afg  = self.defmag(xsamp,Dsnew=Dltmp)  # 'fg' uses Dl
+            # if desired, fit and remove a convergence/shear model to the los
             # deflections; the remaining deflections represent contributions
             # beyond convergence and shear
             if fitshear:
@@ -1696,21 +1720,25 @@ class lensmodel:
                 # set up the arrays we need
                 M = np.array([[xhat,xhat,yhat,dls_ds,0*dls_ds],[yhat,-yhat,xhat,0*dls_ds,dls_ds]])
                 lhs = np.einsum('ijk,kli',M.T,M)
-                rhs = np.einsum('ijk,ik',M.T,defarr)
+                rhs = np.einsum('ijk,ik',M.T,deflos)
                 # solve
                 ans = np.linalg.solve(lhs,rhs)
                 kapgam_all.append(ans)
                 # compute residual deflections
                 alphamod = np.einsum('ijk,j',M.T,ans)
-                defarr = defarr - alphamod
+                deflos = deflos - alphamod
             # see if we are computing differential deflections
             if refimg is None:
-                ddefarr = defarr + 0
+                ddeflos = deflos + 0
+                ddeffg  = deffg  + 0
             else:
-                ddefarr = defarr - defarr[refimg]
+                # note that we use np.delete to remove the entres for refimg after doing the subtraction
+                ddeflos = np.delete(deflos-deflos[refimg], refimg, axis=0)
+                ddeffg  = np.delete(deffg -deffg [refimg], refimg, axis=0)
             # append to samples lists
+            ddef = np.concatenate((ddeflos,ddeffg),axis=0)
             xsamp_all.append(xsamp)
-            defsamp_all.append(ddefarr.flatten())
+            defsamp_all.append(ddef.flatten())
         xsamp_all = np.array(xsamp_all)
         defsamp_all = np.array(defsamp_all)
         if fitshear: kapgam_all = np.array(kapgam_all)
