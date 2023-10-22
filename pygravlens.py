@@ -1272,25 +1272,32 @@ class lensmodel:
                 xtri = np.mean(tri,axis=0)
                 ans = minimize(self.findimg_func,xtri,args=(u,plane,Dsarr[iu]),method='Nelder-Mead',options={'initial_simplex':tri,'xatol':0.01*self.xtol,'fatol':1.e-6*self.xtol**2})
                 if ans.success: imgraw.append(ans.x)
-            imgraw = np.array(imgraw)
-            # there may be duplicate solutions, so extract the unique ones
-            imgarr = get_unique(imgraw,self.xtol)
-            # compute magnifications
-            u,A,dt = self.lenseqn(imgarr,stopslab=plane,Dsnew=Dsarr[iu])
-            muarr = 1.0/np.linalg.det(A)
-            # we only care about differential time delays
-            dt0 = np.amin(dt)
-            dt = dt - dt0
-            # if we have time delays, report images in tdel order
-            if np.amax(dt)>0.0:
-                indx = np.argsort(dt)
+            if len(imgraw)==0:
+                # no candidate images found! source must be beyond the grid
+                print('Note: no images found')
+                imgall.append([])
+                muall.append([])
+                dtall.append([])
             else:
-                indx = np.arange(len(imgarr))
-            # add  to lists
-            imgall.append(imgarr[indx])
-            muall.append(muarr[indx])
-            # note: make sure to use correct tfac for this source
-            dtall.append(tfac[iu]*dt[indx])
+                imgraw = np.array(imgraw)
+                # there may be duplicate solutions, so extract the unique ones
+                imgarr = get_unique(imgraw,self.xtol)
+                # compute magnifications
+                u,A,dt = self.lenseqn(imgarr,stopslab=plane,Dsnew=Dsarr[iu])
+                muarr = 1.0/np.linalg.det(A)
+                # we only care about differential time delays
+                dt0 = np.amin(dt)
+                dt = dt - dt0
+                # if we have time delays, report images in tdel order
+                if np.amax(dt)>0.0:
+                    indx = np.argsort(dt)
+                else:
+                    indx = np.arange(len(imgarr))
+                # add  to lists
+                imgall.append(imgarr[indx])
+                muall.append(muarr[indx])
+                # note: make sure to use correct tfac for this source
+                dtall.append(tfac[iu]*dt[indx])
 
         if oneflag:
             return imgall[0],muall[0],dtall[0]
@@ -1600,7 +1607,7 @@ class lensmodel:
 
         # if any sources are specified, solve the lens equation
         # and plot the source(s) and images
-        if len(src)>=2:
+        if len(src)>=1:
             src = np.array(src)
             if src.ndim==1: src = np.array([src])
             color_list = iter(cm.hsv(np.linspace(0,1,len(src)+1)))
