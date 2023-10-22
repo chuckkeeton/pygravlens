@@ -1614,8 +1614,11 @@ class lensmodel:
             for u in src:
                 imgarr,muarr,dtarr = self.findimg(u)
                 color = next(color_list)
-                ax[0].plot(imgarr[:,0],imgarr[:,1],'.',color=color)
-                ax[1].plot(u[0],u[1],'.',color=color)
+                if len(imgarr)>0:
+                    ax[0].plot(imgarr[:,0],imgarr[:,1],'.',color=color)
+                    ax[1].plot(u[0],u[1],'.',color=color)
+                else:
+                    ax[1].plot(u[0],u[1],'x',color=color)
 
         # adjust and annotate
         if len(imgrange)>=4:
