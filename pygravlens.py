@@ -1608,17 +1608,20 @@ class lensmodel:
         # if any sources are specified, solve the lens equation
         # and plot the source(s) and images
         if len(src)>=1:
+            point_types = ['x', '+', '*', '^', 's', 'p']
             src = np.array(src)
             if src.ndim==1: src = np.array([src])
             color_list = iter(cm.hsv(np.linspace(0,1,len(src)+1)))
             for u in src:
                 imgarr,muarr,dtarr = self.findimg(u)
                 color = next(color_list)
-                if len(imgarr)>0:
-                    ax[0].plot(imgarr[:,0],imgarr[:,1],'.',color=color)
-                    ax[1].plot(u[0],u[1],'.',color=color)
+                Nimg = len(imgarr)
+                if Nimg>=len(point_types):
+                    ptype = '.'
                 else:
-                    ax[1].plot(u[0],u[1],'x',color=color)
+                    ptype = point_types[Nimg]
+                if Nimg>0: ax[0].plot(imgarr[:,0],imgarr[:,1],ptype,color=color)
+                ax[1].plot(u[0],u[1],ptype,color=color)
 
         # adjust and annotate
         if len(imgrange)>=4:
